@@ -1,0 +1,41 @@
+## Fact Table: `BFL.Fact_ActualSales`
+---
+**Columns:**
+- `CustomerKey` (int)
+- `ProductKey` (int)
+- `DivisionKey` (int)
+- `InvoiceTypeKey` (int)
+- `DistributionChannelKey` (int)
+- `CompanyCodeKey` (int)
+- `DateKey` (int)
+- `Invoicenumber` (nvarchar)
+- `InvoiceItemNumber` (nvarchar)
+- `PlantKey` (nvarchar)
+- `ProfitCenter` (nvarchar)
+- `SalesOrganizationKey` (int)
+- `ExchangeRateINR` (decimal)
+- `ActualSalesAmountInINR` (decimal)
+- `ActualSalesAmountInUSD` (decimal)
+- `InvoiceGross` (decimal)
+- `InvoiceNet` (decimal)
+- `CurrencyCodeKey` (int)
+- `BusinessDivisionKey` (int)
+- `BusinessQuantityUnitKey` (int)
+- `InvoiceQuantity` (decimal)
+
+---
+
+**Related Dimensions:**
+- Dim_BusinessDivision_Sales (join over `BusinessDivisionKey`)
+- Dim_BusinessQuantityUnit_sales (join over `BusinessQuantityUnitKey`)
+- Dim_CompanyCode_Sales (join over `CompanyCodeKey`)
+- Dim_CurrencyCode_Sales (join over `CurrencyCodeKey`)
+- Dim_Customer_Sales (join over `CustomerKey`)
+- Dim_Date (join over `DateKey`)
+- Dim_DistributionChannel_Sales (join over `DistributionChannelKey`)
+- Dim_Division_ManPower (join over `DivisionKey`) joins with Dim_Division_Sales (join over `DivisionKey`)
+- Dim_Division_Sales (join over `DivisionKey`) joins with Dim_Division_ManPower (join over `DivisionKey`)
+- Dim_InvoiceType_Sales (join over `InvoiceTypeKey`)
+- Dim_Plant (join over `PlantKey`) joins with Dim_StorageLocation (join over `PlantKey`), Dim_EquipmentMaintenance (join over `PlantID`)
+- Dim_Product_Sales (join over `ProductKey`)
+- Dim_StorageLocation (join over `PlantKey`) joins with Dim_Plant (join over `PlantKey`)

@@ -1,0 +1,42 @@
+## Fact Table: `BFL.Fact_Procurement`
+---
+**Columns:**
+- `FactKey` (bigint)
+- `PurchaseOrderNumber` (nvarchar)
+- `ItemNumber` (nvarchar)
+- `InfoRecord` (nvarchar)
+- `PurchaseRequisitionNumber` (nvarchar)
+- `VendorKey` (int)
+- `MaterialKey` (int)
+- `PlantKey` (int)
+- `CompanyKey` (int)
+- `PurchasingGroupKey` (int)
+- `PurchaseRequsitionDate` (date)
+- `PurchaseOrderDate` (date)
+- `GoodsRecievedDate` (date)
+- `InvoiceDate` (date)
+- `DaysPRtoPO` (int)
+- `DaysPOtoGR` (int)
+- `DaysGRtoInvoice` (int)
+- `TotalCycleDays` (int)
+- `OrderQuantity` (decimal)
+- `OrderUnit` (nvarchar)
+- `GoodsRecievedQuantity` (decimal)
+- `InvoiceQuantity` (decimal)
+- `OriginalPurchaseOrderValue` (decimal)
+- `CurrencyKey` (int)
+- `ExchangeRate` (decimal)
+- `UnitNetPriceINR` (decimal)
+- `TotalSpendINR` (decimal)
+- `GRValueINR` (decimal)
+- `InvoiceValueINR` (decimal)
+- `LoadDate` (datetime)
+
+---
+
+**Related Dimensions:**
+- Dim_Currency_SalesForce (join over `CurrencyKey`)
+- Dim_Material (join over `MaterialKey`)
+- Dim_Plant (join over `PlantKey`) joins with Dim_StorageLocation (join over `PlantKey`), Dim_EquipmentMaintenance (join over `PlantID`)
+- Dim_StorageLocation (join over `PlantKey`) joins with Dim_Plant (join over `PlantKey`)
+- Dim_Vendor_ManPower (join over `VendorKey`)
