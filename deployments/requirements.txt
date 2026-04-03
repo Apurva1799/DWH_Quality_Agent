@@ -16,3 +16,5 @@ numpy==1.24.3
 requests==2.31.0
 keyring==24.3.0
 urllib3==2.1.0
+pandas
+sqlalchemy

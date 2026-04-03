@@ -19,6 +19,7 @@ from datetime import datetime
 from typing import Dict, List, Any, Optional
 import threading
 import queue
+from loguru import logger
 
 from app.agents.orchestrator import OrchestratorAgent
 from app.agents.base import AgentRequest
@@ -27,6 +28,7 @@ from app.config import get_database_config
 from clients.kalyani_langchain_llm import KalyaniLangChainLLM
 from langchain_core.messages import HumanMessage, SystemMessage
 from dotenv import load_dotenv
+from app.agents.chain_of_agents import AgentOrchestrator
 
 load_dotenv()
 
@@ -1019,6 +1021,7 @@ HTML_TEMPLATE = """
 
 # Initialize components
 orchestrator = OrchestratorAgent()
+agent_orchestrator = AgentOrchestrator()  # Chain of Agents
 user_sessions = {}
 llm = KalyaniLangChainLLM()
 
@@ -1063,7 +1066,11 @@ def get_schema_context() -> str:
 def classify_intent(query: str) -> str:
     """Classify user intent based on keywords"""
     query_lower = query.lower()
-    sql_keywords = ['select', 'show', 'query', 'find', 'get', 'count', 'list', 'sql', 'table', 'tables']
+    
+    sql_keywords = ['select', 'show', 'query', 'find', 'get', 'count', 'list', 'sql', 'table', 'tables', 
+                    'production', 'sales', 'revenue', 'orders', 'customers', 'capacity', 'inventory',
+                    'month', 'week', 'year', 'daily', 'total', 'average', 'sum', 'max', 'min', 'top',
+                    'recent', 'last', 'this', 'current', 'data', 'report', 'analytics', 'metrics']
     schema_keywords = ['schema', 'columns', 'fields', 'structure', 'metadata', 'describe', 'what is', 'how to']
     
     if any(kw in query_lower for kw in sql_keywords):
@@ -1072,6 +1079,36 @@ def classify_intent(query: str) -> str:
         return 'schema_question'
     else:
         return 'general_chat'
+
+def extract_sql_from_response(content: str) -> str:
+    """Extract SQL query from LLM response, removing thinking and explanations"""
+    # Remove thinking tags if present
+    content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL)
+    content = re.sub(r'.*?(SELECT|WITH|INSERT|UPDATE|DELETE)', r'\1', content, flags=re.DOTALL | re.IGNORECASE)
+    
+    # Extract code blocks
+    code_block_match = re.search(r'```sql\s*(.*?)```', content, re.DOTALL | re.IGNORECASE)
+    if code_block_match:
+        return code_block_match.group(1).strip()
+    
+    code_block_match = re.search(r'```\s*(.*?)```', content, re.DOTALL)
+    if code_block_match:
+        return code_block_match.group(1).strip()
+    
+    # Extract SQL query - look for SELECT, WITH, etc.
+    sql_pattern = re.search(r'(SELECT\s+.*?;)', content, re.DOTALL | re.IGNORECASE)
+    if sql_pattern:
+        return sql_pattern.group(1).strip()
+    
+    # If no SQL pattern found, return cleaned content
+    lines = content.strip().split('\n')
+    sql_lines = []
+    for line in lines:
+        line = line.strip()
+        if line and not line.lower().startswith(('here', 'okay', 'first', 'let', 'this', 'the', 'i ', 'wait', 'hmm', 'maybe', 'but', 'therefore', 'so ', 'yes', 'no ')):
+            sql_lines.append(line)
+    
+    return ' '.join(sql_lines) if sql_lines else content.strip()
 
 def handle_sql_query(query: str, metadata: str, schema: str, session: dict) -> str:
     """Handle SQL query generation and execution"""
@@ -1087,20 +1124,60 @@ CRITICAL RULES:
 4. For date filters: DATEADD(month, -1, GETDATE()) for "last month"
 5. End with semicolon
 6. NO markdown code blocks in output
+7. NO explanations, thinking, or reasoning - ONLY the SQL query
+8. Output MUST start with SELECT, WITH, INSERT, UPDATE, or DELETE
 
 User Question: {query}
 
-Generate ONLY the SQL query:"""
+Generate ONLY the SQL query, nothing else:"""
     
     try:
         messages = [
-            SystemMessage(content="You are a SQL expert. Generate valid T-SQL queries."),
+            SystemMessage(content="You are a SQL expert. Generate valid T-SQL queries ONLY. Never include thinking, explanations, or markdown. Output raw SQL only."),
             HumanMessage(content=prompt)
         ]
         result = asyncio.run(llm._agenerate(messages))
-        sql_query = result.generations[0].message.content.strip()
-        sql_query = sql_query.replace('```sql', '').replace('```', '').strip()
-        response = f"Here's the SQL query to answer your question:\\n\\n```sql\\n{sql_query}\\n```\\n\\n"
+        raw_content = result.generations[0].message.content.strip()
+        
+        # Extract SQL using the extraction function
+        sql_query = extract_sql_from_response(raw_content)
+        
+        # Execute the query and get results
+        try:
+            from app.database import SQLExecutor
+            executor = SQLExecutor()
+            result_data = asyncio.run(executor.execute_query(sql_query))
+            
+            if result_data.get('success'):
+                data = result_data.get('data', [])
+                columns = result_data.get('columns', [])
+                if data and len(data) > 0:
+                    # Format results as markdown table
+                    import pandas as pd
+                    df = pd.DataFrame(data)
+                    result_table = df.to_markdown(index=False)
+                    response = f"**Query Results ({len(data)} rows):**\n\n```sql\n{sql_query}\n```\n\n{result_table}"
+                else:
+                    response = f"Query executed successfully but returned no results.\n\n```sql\n{sql_query}\n```"
+            else:
+                error_msg = result_data.get('error', 'Unknown error')
+                
+                # Fallback: If asking for tables and DB is down, show metadata
+                if 'table' in query.lower() and ('information_schema' in sql_query.lower() or 'table_name' in sql_query.lower() or 'sys.tables' in sql_query.lower() or 'from sys' in sql_query.lower()):
+                    metadata = load_metadata()
+                    if metadata:
+                        table_list = list(metadata.keys())
+                        tables_md = "\n".join([f"- {t}" for t in sorted(table_list)])
+                        response = f"**Available Tables (from metadata - {len(table_list)} total):**\n\n```sql\n{sql_query}\n```\n\n*Note: Database is currently unavailable, showing cached metadata:*\n\n{tables_md}"
+                    else:
+                        response = f"SQL query generated:\n\n```sql\n{sql_query}\n```\n\n*Database unavailable and no metadata cached*"
+                else:
+                    response = f"SQL query generated:\n\n```sql\n{sql_query}\n```\n\n*Error executing query: {error_msg}*"
+                
+        except Exception as exec_err:
+            # If execution fails, still show the SQL
+            response = f"Here's the SQL query:\n\n```sql\n{sql_query}\n```\n\n*Note: Could not execute query - {exec_err}*"
+        
         return response
     except Exception as e:
         return f"I encountered an error generating the SQL: {e}. Please try rephrasing your question."
@@ -1206,6 +1283,54 @@ def chat():
 def health():
     """Health check endpoint"""
     return jsonify({'status': 'healthy', 'service': 'chatgpt-chatbot'})
+
+@app.route('/chat/v2', methods=['POST'])
+def chat_v2():
+    """Handle chat requests using Chain of Agents architecture"""
+    try:
+        data = request.get_json()
+        user_message = data.get('message', '')
+        session_id = data.get('session_id', str(uuid.uuid4()))
+        
+        # Get or create session history
+        if session_id not in user_sessions:
+            user_sessions[session_id] = {'history': []}
+        
+        session = user_sessions[session_id]
+        
+        # Process through Chain of Agents
+        state = asyncio.run(agent_orchestrator.process_query(
+            query=user_message,
+            session_id=session_id,
+            conversation_history=session['history']
+        ))
+        
+        # Update session history
+        session['history'].append({'role': 'user', 'content': user_message})
+        session['history'].append({'role': 'assistant', 'content': state.final_response})
+        
+        # Build response
+        response_data = {
+            'success': True,
+            'response': state.final_response,
+            'session_id': session_id,
+            'intent': state.intent.value if state.intent else None,
+            'intent_confidence': state.intent_confidence,
+            'selected_tables': state.selected_tables,
+            'generated_sql': state.generated_sql,
+            'execution_success': state.execution_success,
+            'row_count': state.row_count,
+            'visualization_needed': state.visualization_needed,
+            'visualization_type': state.visualization_type.value,
+            'processing_time_ms': state.processing_time_ms,
+            'agent_trace': state.agent_trace
+        }
+        
+        return jsonify(response_data)
+        
+    except Exception as e:
+        logger.error(f"Chain of Agents error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/metadata', methods=['GET'])
 def get_metadata():
