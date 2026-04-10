@@ -33,13 +33,21 @@ class KalyaniLangChainLLM(BaseChatModel):
     ) -> AsyncIterator[ChatGenerationChunk]:
 
         # Format messages for gateway
-        formatted_msgs = [
-            {
-                "role": "user" if m.type == "human" else "assistant",
-                "content": m.content,
-            }
-            for m in messages
-        ]
+        # Handle both string messages and BaseMessage objects
+        formatted_msgs = []
+        for m in messages:
+            if isinstance(m, str):
+                # Plain string message - treat as user message
+                formatted_msgs.append({
+                    "role": "user",
+                    "content": m,
+                })
+            else:
+                # BaseMessage object
+                formatted_msgs.append({
+                    "role": "user" if m.type == "human" else "assistant",
+                    "content": m.content,
+                })
 
         connector = aiohttp.TCPConnector(ssl=self.ssl_context)
 
@@ -121,10 +129,11 @@ class KalyaniLangChainLLM(BaseChatModel):
             generations=[ChatGeneration(message=AIMessage(content=full_content))]
         )
 
-    def _generate(self, *args, **kwargs):
-        raise NotImplementedError(
-            "Use .ainvoke() or .astream() for this async LLM."
-        )
+    def _generate(self, messages, stop=None, **kwargs):
+        """Synchronous generate method that calls async _agenerate"""
+        import asyncio
+        result = asyncio.run(self._agenerate(messages, stop=stop, **kwargs))
+        return ChatResult(generations=[ChatGeneration(message=AIMessage(content=result.generations[0].message.content))])
 
     async def list_models(self):
         """List available models from gateway"""

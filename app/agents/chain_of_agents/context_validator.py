@@ -57,15 +57,33 @@ class ContextValidatorAgent(BaseAgent):
         vague_terms = ['data', 'information', 'stuff', 'things', 'records']
         has_vague = any(term in query for term in vague_terms)
         
+        # Check for clear domain keywords that can be resolved by SchemaSelector
+        domain_keywords = ['production', 'sales', 'inventory', 'forging', 'machining', 'oee', 'employee']
+        has_domain = any(kw in query for kw in domain_keywords)
+        
         # Validation rules
+        # If query has domain keyword AND time period, allow it (SchemaSelector will find tables)
+        if has_domain and has_time:
+            state.context_complete = True
+            state.add_trace(self.name, "Context complete - domain + time specified")
+            logger.info(f"[{self.name}] Context complete (domain+time)")
+            return state
+        
+        # If query has explicit table reference, allow it
+        if has_table_ref:
+            state.context_complete = True
+            state.add_trace(self.name, "Context complete - table specified")
+            logger.info(f"[{self.name}] Context complete (table ref)")
+            return state
+        
+        # Otherwise, check for missing elements
         if has_vague and not has_table_ref:
             missing_elements.append("which table to query")
         
         if 'production' in query and not has_time:
             missing_elements.append("time period for production data (e.g., 'last month', 'this week')")
         
-        if 'sales' in query and not has_time:
-            missing_elements.append("time period for sales data")
+        # Note: sales queries no longer require explicit time period - defaults to last year
         
         if 'top' in query or 'bottom' in query:
             if not re.search(r'(top|bottom)\s+\d+', query):
@@ -74,6 +92,7 @@ class ContextValidatorAgent(BaseAgent):
         # If we have missing elements, ask for clarification
         if missing_elements:
             state.context_complete = False
+            state.missing_context = missing_elements
             state.clarification_question = self._build_clarification(missing_elements, query)
             state.add_trace(self.name, f"Missing context: {missing_elements}")
             logger.info(f"[{self.name}] Missing: {missing_elements}")

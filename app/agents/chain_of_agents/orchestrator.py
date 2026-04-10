@@ -13,10 +13,12 @@ from app.agents.chain_of_agents.intent_classifier import IntentClassifierAgent
 from app.agents.chain_of_agents.context_validator import ContextValidatorAgent
 from app.agents.chain_of_agents.schema_selector import SchemaSelectorAgent
 from app.agents.chain_of_agents.query_generator import QueryGeneratorAgent
+from app.agents.chain_of_agents.database_health import DatabaseHealthAgent
 from app.agents.chain_of_agents.query_executor import QueryExecutorAgent
 from app.agents.chain_of_agents.sql_corrector import SQLQueryCorrectorAgent
 from app.agents.chain_of_agents.response_formatter import ResponseFormatterAgent
 from app.agents.chain_of_agents.visualizer_decision import VisualizerDecisionAgent
+from app.agents.chain_of_agents.data_quality_agent import DataQualityAgent
 
 
 class AgentOrchestrator:
@@ -37,11 +39,13 @@ class AgentOrchestrator:
         self.context_validator = ContextValidatorAgent()
         self.schema_selector = SchemaSelectorAgent()
         self.query_generator = QueryGeneratorAgent()
+        self.db_health = DatabaseHealthAgent()  # NEW: Check DB first
         self.query_executor = QueryExecutorAgent()
-        self.sql_corrector = SQLQueryCorrectorAgent()  # NEW
+        self.sql_corrector = SQLQueryCorrectorAgent()
         self.visualizer_decision = VisualizerDecisionAgent()
         self.response_formatter = ResponseFormatterAgent()
-        
+        self.data_quality = DataQualityAgent()  # NEW: Data Quality monitoring
+
         logger.info("All agents initialized")
     
     async def process_query(self, query: str, session_id: str = "", 
@@ -71,9 +75,20 @@ class AgentOrchestrator:
         logger.info(f"="*60)
         
         try:
+            # Step 0: Database Health Check (NEW - check first!)
+            state = await self.db_health.run(state)
+            db_is_healthy = state.response_data.get('db_healthy', False)
+
             # Step 1: Intent Classification
             state = await self.intent_classifier.run(state)
-            
+
+            # Check if this is a data quality monitoring request
+            if state.intent == IntentType.DATA_QUALITY:
+                logger.info("Data quality monitoring request detected")
+                state = await self.data_quality.run(state)
+                state = await self.response_formatter.run(state)
+                return state
+
             # If clarification needed, skip to response formatting
             if state.intent == IntentType.CLARIFICATION_NEEDED:
                 logger.info("Clarification needed, skipping to response")
@@ -83,24 +98,24 @@ class AgentOrchestrator:
             # Step 2: Context Validation
             state = await self.context_validator.run(state)
             
-            if not state.context_complete:
-                logger.info("Context incomplete, asking for clarification")
-                state = await self.response_formatter.run(state)
-                return state
-            
-            # Step 3: Schema Selection
+            # Step 3: Schema Selection (run even with incomplete context to find tables)
             state = await self.schema_selector.run(state)
             
             if not state.selected_tables:
                 logger.warning("No tables selected, using fallback")
-                # Continue anyway - query generator might handle it
+            
+            # If context is incomplete, show relevant tables and ask for clarification
+            if not state.context_complete:
+                logger.info("Context incomplete - showing relevant tables and asking for clarification")
+                state = await self.response_formatter.run(state)
+                return state
             
             # For general chat and schema questions, skip SQL generation
             if state.intent in [IntentType.GENERAL_CHAT, IntentType.SCHEMA_QUESTION]:
                 state = await self.response_formatter.run(state)
                 return state
             
-            # Step 4: Query Generation
+            # Step 4: Query Generation (always generate SQL, even if DB is down)
             state = await self.query_generator.run(state)
             
             if not state.sql_valid:
@@ -109,18 +124,28 @@ class AgentOrchestrator:
                 state = await self.response_formatter.run(state)
                 return state
             
-            # Step 5: Query Execution
+            # If DB is down, skip execution but still show generated SQL
+            if not db_is_healthy:
+                logger.warning("Database is down - skipping execution, showing generated SQL")
+                state.add_trace("Orchestrator", "DB unhealthy - SQL generated but not executed")
+                state.response_data['db_down'] = True
+                state = await self.response_formatter.run(state)
+                return state
+            
+            # Step 5: Query Execution (only if DB is healthy)
             state = await self.query_executor.run(state)
             
             # Step 6: SQL Corrector (if execution failed)
             if not state.execution_success and state.execution_error:
-                logger.info("Query execution failed, attempting correction")
+                logger.info(f"Query execution failed with error: {state.execution_error[:100]}")
                 state = await self.sql_corrector.run(state)
                 
                 # If correction was made, retry execution
                 if state.sql_valid and not state.execution_error:
                     logger.info("SQL corrected, retrying execution")
                     state = await self.query_executor.run(state)
+                else:
+                    logger.warning("SQL correction failed or no changes made")
             
             # Step 7: Visualizer Decision
             state = await self.visualizer_decision.run(state)

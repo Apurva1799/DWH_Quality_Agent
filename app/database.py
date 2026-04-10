@@ -9,11 +9,11 @@ import urllib.parse
 from loguru import logger
 from app.config import settings
 
-# Database engine configuration (using Silver DB as default)
+# Database engine configuration (using Gold DB as default)
 # URL-encode credentials to handle special characters like @ in passwords
-_encoded_username = urllib.parse.quote_plus(settings.sql_silverdb_username)
-_encoded_password = urllib.parse.quote_plus(settings.sql_silverdb_password)
-DATABASE_URL = f"mssql+pymssql://{_encoded_username}:{_encoded_password}@{settings.sql_silverdb_server}:1433/{settings.sql_silverdb_name}"
+_encoded_username = urllib.parse.quote_plus(settings.sql_golddb_username)
+_encoded_password = urllib.parse.quote_plus(settings.sql_golddb_password)
+DATABASE_URL = f"mssql+pymssql://{_encoded_username}:{_encoded_password}@{settings.sql_golddb_server}:1433/{settings.sql_golddb_name}"
 
 engine = create_engine(
     DATABASE_URL,

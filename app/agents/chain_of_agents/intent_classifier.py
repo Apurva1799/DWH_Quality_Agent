@@ -45,9 +45,12 @@ Analyze the user's query and classify it into one of these categories:
 5. VISUALIZATION - User explicitly wants charts or graphs
    Examples: "show bar chart of sales", "plot revenue trend", "visualize top products"
 
+6. DATA_QUALITY - User wants to monitor data quality, check layer health, or track stored procedures
+   Examples: "check bronze layer quality", "monitor stored procedures", "detect schema changes", "data health check", "track SP changes"
+
 Respond ONLY with a JSON object in this exact format:
 {
-    "intent": "sql_query|schema_question|general_chat|clarification_needed|visualization",
+    "intent": "sql_query|schema_question|general_chat|clarification_needed|visualization|data_quality",
     "confidence": 0.0-1.0,
     "reasoning": "brief explanation of your decision",
     "clarification_question": "question to ask user if clarification_needed, otherwise null"
@@ -111,7 +114,24 @@ Respond ONLY with a JSON object in this exact format:
     def _quick_check(self, query: str) -> IntentType:
         """Quick keyword-based classification for common patterns"""
         query_lower = query.lower()
-        
+
+        # Data Quality Monitoring
+        quality_patterns = [
+            r'data quality',
+            r'quality check',
+            r'health check',
+            r'monitor (bronze|silver|gold)',
+            r'(bronze|silver|gold) layer',
+            r'stored procedure',
+            r'track sp',
+            r'schema change',
+            r'data freshness',
+            r'layer quality'
+        ]
+        for pattern in quality_patterns:
+            if re.search(pattern, query_lower):
+                return IntentType.DATA_QUALITY
+
         # Schema questions
         schema_patterns = [
             r'what tables',
@@ -126,7 +146,7 @@ Respond ONLY with a JSON object in this exact format:
         for pattern in schema_patterns:
             if re.search(pattern, query_lower):
                 return IntentType.SCHEMA_QUESTION
-        
+
         # Visualization
         viz_patterns = [
             r'chart|graph|plot|visualize|visualization|bar chart|line chart|pie chart',
@@ -136,7 +156,7 @@ Respond ONLY with a JSON object in this exact format:
         for pattern in viz_patterns:
             if re.search(pattern, query_lower):
                 return IntentType.VISUALIZATION
-        
+
         # SQL queries - data analysis patterns
         sql_patterns = [
             r'(show|get|find|list|count|sum|average|total|top|bottom)\s+\w+',
@@ -149,7 +169,7 @@ Respond ONLY with a JSON object in this exact format:
         for pattern in sql_patterns:
             if re.search(pattern, query_lower):
                 return IntentType.SQL_QUERY
-        
+
         # General chat
         chat_patterns = [
             r'^(hi|hello|hey|good morning|good afternoon|good evening)',
@@ -161,7 +181,7 @@ Respond ONLY with a JSON object in this exact format:
         for pattern in chat_patterns:
             if re.search(pattern, query_lower):
                 return IntentType.GENERAL_CHAT
-        
+
         return None
     
     async def handle_error(self, state: AgentState, error: Exception) -> AgentState:

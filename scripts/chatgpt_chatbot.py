@@ -99,50 +99,65 @@ HTML_TEMPLATE = """
     <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.2/marked.min.js"></script>
     <style>
         :root {
-            --sidebar-width: 260px;
+            --sidebar-width: 280px;
             --header-height: 60px;
-            --input-height: 80px;
+            --input-height: 70px;
         }
         
         [data-theme="dark"] {
-            --bg-primary: #343541;
-            --bg-secondary: #40414f;
-            --bg-sidebar: #202123;
-            --bg-hover: #2a2b32;
-            --text-primary: #ececf1;
-            --text-secondary: #8e8ea0;
-            --accent: #10a37f;
-            --accent-hover: #0d8f6e;
-            --border: #4d4d4f;
+            --bg-primary: #1e1e1e;
+            --bg-secondary: #2d2d2d;
+            --bg-sidebar: #252525;
+            --bg-hover: #3a3a3a;
+            --text-primary: #e8eaed;
+            --text-secondary: #9aa0a6;
+            --accent: #8ab4f8;
+            --accent-hover: #669df6;
+            --border: #3c4043;
             --code-bg: #1e1e1e;
+            --success: #81c995;
+            --warning: #f28b82;
+            --shadow: rgba(0, 0, 0, 0.2);
         }
         
         [data-theme="light"] {
             --bg-primary: #ffffff;
-            --bg-secondary: #f7f7f8;
-            --bg-sidebar: #f7f7f8;
-            --bg-hover: #e5e5e5;
-            --text-primary: #343541;
-            --text-secondary: #6e6e80;
-            --accent: #10a37f;
-            --accent-hover: #0d8f6e;
-            --border: #d9d9e3;
-            --code-bg: #f6f6f6;
+            --bg-secondary: #f8f9fa;
+            --bg-sidebar: #f1f3f4;
+            --bg-hover: #e8eaed;
+            --text-primary: #202124;
+            --text-secondary: #5f6368;
+            --accent: #1a73e8;
+            --accent-hover: #1557b0;
+            --border: #dadce0;
+            --code-bg: #f8f9fa;
+            --success: #188038;
+            --warning: #d93025;
+            --shadow: rgba(0, 0, 0, 0.08);
         }
         
         * { margin: 0; padding: 0; box-sizing: border-box; }
         
-        body {
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+        html, body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
             background: var(--bg-primary);
             color: var(--text-primary);
             height: 100vh;
+            width: 100vw;
             overflow: hidden;
+            font-size: 15px;
+            line-height: 1.6;
+        }
+        
+        button, .chat-item, .new-chat-btn, .nav-btn {
+            transition: background-color 0.15s ease, border-color 0.15s ease;
         }
         
         .app-container {
             display: flex;
             height: 100vh;
+            width: 100vw;
+            overflow: hidden;
         }
         
         /* Sidebar */
@@ -152,22 +167,23 @@ HTML_TEMPLATE = """
             border-right: 1px solid var(--border);
             display: flex;
             flex-direction: column;
-            padding: 12px;
+            padding: 16px;
             gap: 8px;
+            flex-shrink: 0;
         }
         
         .new-chat-btn {
             display: flex;
             align-items: center;
-            gap: 12px;
-            padding: 12px 16px;
+            gap: 10px;
+            padding: 10px 16px;
             border: 1px solid var(--border);
             border-radius: 8px;
             background: transparent;
             color: var(--text-primary);
             cursor: pointer;
             font-size: 14px;
-            transition: all 0.2s;
+            font-weight: 500;
         }
         
         .new-chat-btn:hover {
@@ -185,13 +201,12 @@ HTML_TEMPLATE = """
         .chat-item {
             display: flex;
             align-items: center;
-            gap: 12px;
-            padding: 10px 12px;
-            border-radius: 8px;
+            gap: 10px;
+            padding: 8px 12px;
+            border-radius: 6px;
             cursor: pointer;
             font-size: 14px;
-            color: var(--text-secondary);
-            transition: background 0.2s;
+            color: var(--text-primary);
             overflow: hidden;
         }
         
@@ -201,7 +216,6 @@ HTML_TEMPLATE = """
         
         .chat-item.active {
             background: var(--bg-hover);
-            color: var(--text-primary);
         }
         
         .chat-item i {
@@ -245,6 +259,8 @@ HTML_TEMPLATE = """
             display: flex;
             flex-direction: column;
             position: relative;
+            max-width: 100%;
+            overflow-x: hidden;
         }
         
         .header {
@@ -295,6 +311,7 @@ HTML_TEMPLATE = """
         .chat-container {
             flex: 1;
             overflow-y: auto;
+            overflow-x: hidden;
             padding: 20px 0;
             scroll-behavior: smooth;
         }
@@ -366,12 +383,13 @@ HTML_TEMPLATE = """
             color: var(--text-secondary);
         }
         
-        /* Messages */
+        /* Messages - Redesigned for robustness */
         .message {
             display: flex;
-            gap: 16px;
-            padding: 20px 20%;
+            gap: 12px;
+            padding: 16px 10%;
             border-bottom: 1px solid var(--border);
+            max-width: 100%;
         }
         
         .message.user {
@@ -379,18 +397,18 @@ HTML_TEMPLATE = """
         }
         
         .message.assistant {
-            background: var(--bg-secondary);
+            background: var(--bg-primary);
         }
         
         .message-avatar {
             width: 32px;
             height: 32px;
-            border-radius: 8px;
+            border-radius: 50%;
             display: flex;
             align-items: center;
             justify-content: center;
+            font-size: 13px;
             flex-shrink: 0;
-            font-size: 16px;
         }
         
         .message.user .message-avatar {
@@ -399,15 +417,23 @@ HTML_TEMPLATE = """
         }
         
         .message.assistant .message-avatar {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: var(--text-secondary);
             color: white;
         }
         
         .message-content {
             flex: 1;
-            font-size: 16px;
+            font-size: 15px;
             line-height: 1.6;
-            max-width: none;
+            min-width: 0;
+            overflow-wrap: break-word;
+            word-wrap: break-word;
+            word-break: break-word;
+        }
+        
+        .message-text {
+            max-width: 100%;
+            overflow-x: hidden;
         }
         
         .message-content p {
@@ -418,6 +444,7 @@ HTML_TEMPLATE = """
             margin-bottom: 0;
         }
         
+        /* Message Actions */
         .message-actions {
             display: flex;
             gap: 8px;
@@ -431,22 +458,49 @@ HTML_TEMPLATE = """
         }
         
         .action-btn {
-            padding: 4px 8px;
-            border-radius: 6px;
+            padding: 4px 10px;
+            border-radius: 4px;
             border: 1px solid var(--border);
-            background: transparent;
+            background: var(--bg-secondary);
             color: var(--text-secondary);
             font-size: 12px;
             cursor: pointer;
-            display: flex;
-            align-items: center;
-            gap: 4px;
             transition: all 0.2s;
         }
         
         .action-btn:hover {
             background: var(--bg-hover);
             color: var(--text-primary);
+        }
+        
+        .message-text pre {
+            background: var(--code-bg);
+            border-radius: 8px;
+            margin: 16px 0;
+            border: 1px solid var(--border);
+            padding: 0;
+            max-width: 100%;
+            overflow-x: auto;
+            box-sizing: border-box;
+        }
+        
+        .message-text pre code {
+            display: block;
+            padding: 16px;
+            font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+            font-size: 14px;
+            line-height: 1.5;
+            background: transparent;
+            max-width: 100%;
+            box-sizing: border-box;
+        }
+        
+        .message-text code {
+            font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+            font-size: 14px;
+            background: var(--code-bg);
+            padding: 2px 6px;
+            border-radius: 4px;
         }
         
         /* Code Blocks */
@@ -459,12 +513,16 @@ HTML_TEMPLATE = """
         }
         
         .code-header {
-            display: flex;
+            display: none;
             justify-content: space-between;
             align-items: center;
             padding: 8px 16px;
             background: rgba(0,0,0,0.2);
             border-bottom: 1px solid var(--border);
+        }
+        
+        .code-block:hover .code-header {
+            display: flex;
         }
         
         .code-language {
@@ -506,57 +564,54 @@ HTML_TEMPLATE = """
         
         /* Input Area */
         .input-container {
+            padding: 16px 10%;
             border-top: 1px solid var(--border);
-            padding: 12px 20%;
             background: var(--bg-primary);
         }
         
         .input-wrapper {
             display: flex;
-            align-items: flex-end;
-            gap: 12px;
-            background: var(--bg-secondary);
+            gap: 8px;
+            align-items: center;
+            background: transparent;
             border: 1px solid var(--border);
-            border-radius: 16px;
-            padding: 12px 16px;
-            max-width: 800px;
-            margin: 0 auto;
+            border-radius: 24px;
+            padding: 8px 12px;
         }
         
-        .input-field {
+        .input-wrapper:focus-within {
+            border-color: var(--accent);
+        }
+        
+        .input-wrapper input,
+        .input-wrapper textarea {
             flex: 1;
             background: transparent;
             border: none;
-            color: var(--text-primary);
-            font-size: 16px;
-            line-height: 1.5;
-            resize: none;
-            max-height: 200px;
-            min-height: 24px;
-            font-family: inherit;
-        }
-        
-        .input-field:focus {
             outline: none;
+            color: var(--text-primary);
+            font-size: 15px;
+            padding: 8px;
+            resize: none;
         }
         
-        .input-field::placeholder {
+        .input-wrapper input::placeholder,
+        .input-wrapper textarea::placeholder {
             color: var(--text-secondary);
         }
         
         .send-btn {
             width: 36px;
             height: 36px;
-            border-radius: 8px;
             border: none;
+            border-radius: 50%;
             background: var(--accent);
             color: white;
             cursor: pointer;
             display: flex;
             align-items: center;
             justify-content: center;
-            transition: all 0.2s;
-            flex-shrink: 0;
+            font-size: 14px;
         }
         
         .send-btn:hover:not(:disabled) {
@@ -564,8 +619,9 @@ HTML_TEMPLATE = """
         }
         
         .send-btn:disabled {
-            opacity: 0.4;
+            background: var(--text-secondary);
             cursor: not-allowed;
+            opacity: 0.5;
         }
         
         .input-hint {
@@ -598,12 +654,326 @@ HTML_TEMPLATE = """
             40% { transform: scale(1); opacity: 1; }
         }
         
+        /* Collapsible SQL Section - Fixed */
+        details.sql-collapsible {
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            margin: 12px 0;
+            border: 1px solid var(--border);
+            overflow: hidden;
+            max-width: 100%;
+            width: 100%;
+            box-sizing: border-box;
+            min-width: 0;
+        }
+        
+        details.sql-collapsible summary {
+            padding: 10px 14px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text-primary);
+            list-style: none;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+
+        details.sql-collapsible summary .sql-summary {
+            color: var(--text-secondary);
+        }
+        
+        details.sql-collapsible summary::-webkit-details-marker {
+            display: none;
+        }
+        
+        details.sql-collapsible summary::before {
+            content: '▶';
+            font-size: 10px;
+            color: var(--text-secondary);
+            transition: transform 0.2s;
+        }
+        
+        details.sql-collapsible[open] summary::before {
+            content: '▼';
+        }
+        
+        details.sql-collapsible summary:hover {
+            background: var(--bg-hover);
+        }
+        
+        details.sql-collapsible pre {
+            margin: 0;
+            border-radius: 0;
+            border-top: 1px solid var(--border);
+            max-height: 400px;
+            overflow-x: auto;
+            overflow-y: auto;
+            white-space: pre;
+            word-wrap: normal;
+            width: 100%;
+            box-sizing: border-box;
+            max-width: 100%;
+            min-width: 0;
+            display: block;
+        }
+        
+        details.sql-collapsible pre code {
+            display: block;
+            padding: 16px;
+            background: transparent;
+            font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+            font-size: 13px;
+            line-height: 1.5;
+            white-space: pre;
+            width: 100%;
+            box-sizing: border-box;
+            max-width: 100%;
+            min-width: 0;
+        }
+        
+        /* Table Navigation */
+        .table-container {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            margin: 12px 0;
+            overflow: hidden;
+            max-width: 100%;
+        }
+        
+        .table-wrapper {
+            overflow-x: auto;
+            max-width: 100%;
+            display: block;
+        }
+        
+        .table-wrapper table {
+            width: auto;
+            min-width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+            table-layout: auto;
+        }
+        
+        .table-wrapper th,
+        .table-wrapper td {
+            padding: 12px 16px;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 250px;
+        }
+        
+        .table-wrapper th {
+            background: var(--bg-secondary);
+            font-weight: 500;
+            color: var(--text-primary);
+            position: sticky;
+            top: 0;
+            font-size: 13px;
+        }
+        
+        .table-wrapper tr:hover {
+            background: var(--bg-hover);
+        }
+        
+        .table-wrapper tr:last-child td {
+            border-bottom: none;
+        }
+        
+        .table-container > table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+        
+        .table-container > table th,
+        .table-container > table td {
+            padding: 10px 12px;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 250px;
+        }
+        
+        .table-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 16px;
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border);
+            font-size: 13px;
+        }
+        
+        .table-nav {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .nav-btn {
+            width: 32px;
+            height: 32px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            background: transparent;
+            color: var(--text-primary);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 13px;
+        }
+        
+        .nav-btn:hover:not(:disabled) {
+            background: var(--bg-hover);
+        }
+        
+        .nav-btn:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+        
+        .page-indicator {
+            font-size: 13px;
+            color: var(--text-secondary);
+            padding: 0 4px;
+        }
+        
+        .table-footer {
+            padding: 8px 16px;
+            background: var(--bg-secondary);
+            border-top: 1px solid var(--border);
+            font-size: 12px;
+            color: var(--text-secondary);
+            text-align: center;
+        }
+        
+        .exec-time {
+            color: var(--text-secondary);
+            font-size: 12px;
+            font-weight: normal;
+        }
+        
+        /* Table Container Scrollbar Styles */
+        .table-container::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        
+        .table-container::-webkit-scrollbar-track {
+            background: var(--bg-primary);
+            border-radius: 4px;
+        }
+        
+        .table-container::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 4px;
+        }
+        
+        .table-container::-webkit-scrollbar-thumb:hover {
+            background: var(--text-secondary);
+        }
+        
+        /* Table Styling - Professional */
+        .message-text table {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0;
+            font-size: 13px;
+            background: var(--bg-secondary);
+            border-radius: 6px;
+            overflow: hidden;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        
+        .message-text table thead {
+            background: linear-gradient(135deg, var(--bg-hover) 0%, var(--bg-secondary) 100%);
+        }
+        
+        .message-text table th {
+            padding: 12px 14px;
+            text-align: left;
+            font-weight: 600;
+            color: var(--text-primary);
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            border-bottom: 2px solid var(--border);
+            white-space: nowrap;
+        }
+        
+        .message-text table td {
+            padding: 10px 14px;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+            color: var(--text-secondary);
+            vertical-align: middle;
+        }
+        
+        .message-text table tr:hover {
+            background: rgba(74, 158, 255, 0.05);
+        }
+        
+        .message-text table tr:last-child td {
+            border-bottom: none;
+        }
+        
+        .message-text table td {
+            color: var(--text-secondary);
+        }
+        
+        /* Results Count Badge */
+        .results-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 10px;
+            background: var(--success);
+            color: white;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 500;
+            margin-bottom: 12px;
+        }
+        
+        .results-badge.warning {
+            background: var(--warning);
+            color: var(--text-primary);
+        }
+        
+        /* Ensure content fits */
+        .message-content {
+            max-width: 100%;
+            overflow-x: hidden;
+        }
+        
+        .message-text {
+            overflow-wrap: break-word;
+            word-wrap: break-word;
+        }
+        
         /* Responsive */
         @media (max-width: 768px) {
             .sidebar { display: none; }
             .message { padding: 16px; }
             .input-container { padding: 12px 16px; }
             .example-grid { grid-template-columns: 1fr; }
+            .message-text table {
+                font-size: 12px;
+            }
+            .message-text table th,
+            .message-text table td {
+                padding: 6px 8px;
+            }
         }
         
         /* Scrollbar */
@@ -655,8 +1025,7 @@ HTML_TEMPLATE = """
         <div class="main-content">
             <div class="header">
                 <div class="header-title">
-                    <i class="fas fa-robot"></i>
-                    <span>Kalyani Database Assistant</span>
+                    <span>Kalyani Warehouse Agent</span>
                 </div>
                 <div class="header-actions">
                     <button class="header-btn" onclick="shareChat()" title="Share">
@@ -672,7 +1041,7 @@ HTML_TEMPLATE = """
                 <!-- Welcome Screen -->
                 <div class="welcome-screen" id="welcomeScreen">
                     <div class="welcome-logo">
-                        <i class="fas fa-database"></i>
+                        <span class="ai-badge">AI</span>
                     </div>
                     <h1 class="welcome-title">How can I help you today?</h1>
                     
@@ -701,7 +1070,7 @@ HTML_TEMPLATE = """
             
             <div class="input-container">
                 <div class="input-wrapper">
-                    <textarea class="input-field" id="userInput" placeholder="Message Kalyani Database Assistant..." rows="1" onkeydown="handleKeyDown(event)" oninput="autoResize(this)"></textarea>
+                    <textarea class="input-field" id="userInput" placeholder="" rows="1" onkeydown="handleKeyDown(event)" oninput="autoResize(this)"></textarea>
                     <button class="send-btn" id="sendBtn" onclick="sendMessage()" disabled>
                         <i class="fas fa-paper-plane"></i>
                     </button>
@@ -872,7 +1241,7 @@ HTML_TEMPLATE = """
             
             div.innerHTML = `
                 <div class="message-avatar">
-                    <i class="fas fa-${role === 'user' ? 'user' : 'robot'}"></i>
+                    ${role === 'user' ? '<i class="fas fa-user"></i>' : '<span class="ai-badge">AI</span>'}
                 </div>
                 <div class="message-content">
                     ${isStreaming ? '<div class="typing-indicator"><span></span><span></span><span></span></div>' : '<div class="message-text"></div>'}
@@ -897,6 +1266,29 @@ HTML_TEMPLATE = """
             
             const { element } = createMessageElement(role, content, false);
             element.querySelector('.message-text').innerHTML = marked.parse(content);
+
+            // Initialize pagination for any rendered result tables
+            element.querySelectorAll('.table-container').forEach((container) => {
+                const table = container.querySelector('table');
+                if (!table) return;
+
+                const pageSizeAttr = container.getAttribute('data-page-size');
+                const pageSize = pageSizeAttr ? parseInt(pageSizeAttr) : 10;
+                if (!Number.isFinite(pageSize) || pageSize <= 0) return;
+
+                const rows = table.querySelectorAll('tr');
+                if (!rows || rows.length === 0) return;
+
+                // Keep the header row (index 0) always visible; paginate remaining rows
+                rows.forEach((row, idx) => {
+                    if (idx === 0) {
+                        row.style.display = '';
+                        return;
+                    }
+                    const dataIdx = idx - 1;
+                    row.style.display = dataIdx < pageSize ? '' : 'none';
+                });
+            });
             
             chatContainer.appendChild(element);
             chatContainer.scrollTop = chatContainer.scrollHeight;
@@ -911,18 +1303,9 @@ HTML_TEMPLATE = """
         }
         
         function addCopyButton(pre) {
-            const header = document.createElement('div');
-            header.className = 'code-header';
-            
-            const lang = pre.querySelector('code')?.className?.replace('language-', '') || 'code';
-            header.innerHTML = `
-                <span class="code-language">${lang}</span>
-                <button class="copy-btn" onclick="copyCode(this)">
-                    <i class="fas fa-copy"></i> Copy
-                </button>
-            `;
-            
-            pre.insertBefore(header, pre.firstChild);
+            // Copy button disabled for cleaner UI display
+            // The code block is now displayed without header
+            return;
         }
         
         function copyCode(btn) {
@@ -1000,6 +1383,77 @@ HTML_TEMPLATE = """
                 isStreaming = false;
                 updateSendButton();
             }
+        }
+        
+        // Table pagination function
+        function changePage(btn, direction) {
+            const nav = btn.closest('.table-nav');
+            const container = btn.closest('.table-container');
+            const indicator = nav.querySelector('.page-indicator');
+            
+            if (!indicator) return;
+            
+            const match = indicator.textContent.match(/Page (\d+) of (\d+)/);
+            if (!match) return;
+            
+            let currentPage = parseInt(match[1]);
+            const totalPages = parseInt(match[2]);
+            
+            currentPage += direction;
+            if (currentPage < 1) currentPage = 1;
+            if (currentPage > totalPages) currentPage = totalPages;
+            
+            // Update indicator
+            indicator.textContent = `Page ${currentPage} of ${totalPages}`;
+            
+            // Update button states
+            nav.querySelectorAll('.nav-btn')[0].disabled = currentPage === 1;
+            nav.querySelectorAll('.nav-btn')[1].disabled = currentPage === totalPages;
+            
+            // Get the table
+            const table = container.querySelector('table');
+            if (!table) return;
+            
+            const pageSizeAttr = container.getAttribute('data-page-size');
+            const pageSize = pageSizeAttr ? parseInt(pageSizeAttr) : 10;
+            const effectivePageSize = (Number.isFinite(pageSize) && pageSize > 0) ? pageSize : 10;
+
+            // Pandas markdown tables may not include <tbody>, so paginate using all <tr>
+            const rows = table.querySelectorAll('tr');
+            if (!rows || rows.length === 0) return;
+
+            const startIdx = (currentPage - 1) * effectivePageSize;
+            const endIdx = currentPage * effectivePageSize;
+            
+            // Show/hide rows based on current page
+            rows.forEach((row, idx) => {
+                if (idx === 0) {
+                    row.style.display = '';
+                    return;
+                }
+
+                const dataIdx = idx - 1;
+                if (dataIdx >= startIdx && dataIdx < endIdx) {
+                    row.style.display = '';
+                } else {
+                    row.style.display = 'none';
+                }
+            });
+            
+            // Update showing text
+            const header = container.querySelector('.table-header strong');
+            if (header) {
+                const totalRowsMatch = header.textContent.match(/of (\d+) rows/);
+                if (totalRowsMatch) {
+                    const totalRows = parseInt(totalRowsMatch[1]);
+                    const startRow = (currentPage - 1) * effectivePageSize + 1;
+                    const endRow = Math.min(currentPage * effectivePageSize, totalRows);
+                    const timeInfo = header.querySelector('.exec-time')?.outerHTML || '';
+                    header.innerHTML = `Query Results (showing ${startRow}-${endRow} of ${totalRows} rows)${timeInfo}`;
+                }
+            }
+            
+            showToast(`Page ${currentPage} of ${totalPages}`);
         }
         
         // Configure marked for code highlighting
@@ -1245,38 +1699,50 @@ def home():
 
 @app.route('/chat', methods=['POST'])
 def chat():
-    """Handle chat requests with full context"""
+    """Handle chat requests using Chain of Agents (unified endpoint)"""
     try:
         data = request.get_json()
         user_message = data.get('message', '')
         session_id = data.get('session_id', str(uuid.uuid4()))
         
+        # Get or create session history
         if session_id not in user_sessions:
             user_sessions[session_id] = {'history': []}
         
         session = user_sessions[session_id]
-        metadata_context = get_relevant_metadata(user_message)
-        schema_context = get_schema_context()
         
-        intent = classify_intent(user_message)
+        # Process through Chain of Agents
+        state = asyncio.run(agent_orchestrator.process_query(
+            query=user_message,
+            session_id=session_id,
+            conversation_history=session['history']
+        ))
         
-        if intent == 'sql_query':
-            response_text = handle_sql_query(user_message, metadata_context, schema_context, session)
-        elif intent == 'schema_question':
-            response_text = handle_schema_question(user_message, schema_context)
-        else:
-            response_text = handle_general_chat(user_message, metadata_context, schema_context, session)
-        
+        # Update session history
         session['history'].append({'role': 'user', 'content': user_message})
-        session['history'].append({'role': 'assistant', 'content': response_text})
+        session['history'].append({'role': 'assistant', 'content': state.final_response})
         
-        return jsonify({
+        # Build response
+        response_data = {
             'success': True,
-            'response': response_text,
+            'response': state.final_response,
             'session_id': session_id,
-            'intent': intent
-        })
+            'intent': state.intent.value if state.intent else None,
+            'intent_confidence': state.intent_confidence,
+            'selected_tables': state.selected_tables,
+            'generated_sql': state.generated_sql,
+            'execution_success': state.execution_success,
+            'row_count': state.row_count,
+            'visualization_needed': state.visualization_needed,
+            'visualization_type': state.visualization_type.value,
+            'processing_time_ms': state.processing_time_ms,
+            'agent_trace': state.agent_trace
+        }
+        
+        return jsonify(response_data)
+        
     except Exception as e:
+        logger.error(f"Chain of Agents error: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/health')

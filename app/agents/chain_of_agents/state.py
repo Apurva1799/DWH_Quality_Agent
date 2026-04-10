@@ -18,6 +18,7 @@ class IntentType(Enum):
     GENERAL_CHAT = "general_chat"
     CLARIFICATION_NEEDED = "clarification_needed"
     VISUALIZATION = "visualization"
+    DATA_QUALITY = "data_quality"
 
 
 class VisualizationType(Enum):
@@ -51,10 +52,12 @@ class AgentState:
     # Context Validation
     context_complete: bool = False
     clarification_question: Optional[str] = None
+    missing_context: List[str] = field(default_factory=list)
     
     # Schema Selection
     selected_tables: List[str] = field(default_factory=list)
     table_descriptions: Dict[str, str] = field(default_factory=dict)
+    join_relationships: Dict[str, List[Dict[str, str]]] = field(default_factory=dict)  # table -> [{related_table, join_key}]
     
     # Query Generation
     generated_sql: str = ""

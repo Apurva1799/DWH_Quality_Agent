@@ -3,6 +3,7 @@ Query Executor Agent
 Executes SQL queries and handles results/errors
 """
 
+import time
 import pandas as pd
 from loguru import logger
 
@@ -22,7 +23,7 @@ class QueryExecutorAgent(BaseAgent):
         self.executor = SQLExecutor()
     
     async def process(self, state: AgentState) -> AgentState:
-        """Execute SQL query"""
+        """Execute SQL query with timing"""
         sql = state.generated_sql
         
         if not sql or not state.sql_valid:
@@ -31,10 +32,16 @@ class QueryExecutorAgent(BaseAgent):
             state.add_trace(self.name, "No valid SQL, skipping execution")
             return state
         
+        start_time = time.time()
+        
         try:
             logger.info(f"[{self.name}] Executing: {sql[:100]}...")
             
             result = await self.executor.execute_query(sql)
+            
+            # Calculate execution time
+            execution_time = time.time() - start_time
+            state.execution_time = execution_time
             
             if result.get('success'):
                 data = result.get('data', [])
@@ -46,31 +53,33 @@ class QueryExecutorAgent(BaseAgent):
                     state.row_count = len(df)
                     state.execution_success = True
                     state.execution_error = None
-                    state.add_trace(self.name, f"Success: {len(df)} rows")
-                    logger.info(f"[{self.name}] Success: {len(df)} rows")
+                    state.add_trace(self.name, f"Success: {len(df)} rows in {execution_time:.2f}s")
+                    logger.info(f"[{self.name}] Success: {len(df)} rows in {execution_time:.2f}s")
                 else:
                     # Empty result is still success
                     state.query_results = pd.DataFrame(columns=columns)
                     state.row_count = 0
                     state.execution_success = True
                     state.execution_error = None
-                    state.add_trace(self.name, "Success: 0 rows")
-                    logger.info(f"[{self.name}] Success: 0 rows")
+                    state.add_trace(self.name, f"Success: 0 rows in {execution_time:.2f}s")
+                    logger.info(f"[{self.name}] Success: 0 rows in {execution_time:.2f}s")
             else:
                 state.execution_success = False
                 state.execution_error = result.get('error', 'Unknown execution error')
                 state.query_results = None
                 state.row_count = 0
-                state.add_trace(self.name, f"Error: {state.execution_error}")
-                logger.error(f"[{self.name}] Error: {state.execution_error}")
+                state.add_trace(self.name, f"Error after {execution_time:.2f}s: {state.execution_error}")
+                logger.error(f"[{self.name}] Error after {execution_time:.2f}s: {state.execution_error}")
                 
         except Exception as e:
-            logger.error(f"[{self.name}] Exception: {e}")
+            execution_time = time.time() - start_time
+            state.execution_time = execution_time
+            logger.error(f"[{self.name}] Exception after {execution_time:.2f}s: {e}")
             state.execution_success = False
             state.execution_error = str(e)
             state.query_results = None
             state.row_count = 0
-            state.add_trace(self.name, f"Exception: {str(e)}")
+            state.add_trace(self.name, f"Exception after {execution_time:.2f}s: {str(e)}")
         
         return state
     

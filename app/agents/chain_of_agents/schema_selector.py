@@ -36,7 +36,7 @@ class SchemaSelectorAgent(BaseAgent):
             for md_file in METADATA_PATH.glob("*.md"):
                 try:
                     content = md_file.read_text()
-                    tables[md_file.stem] = content[:1000]  # First 1000 chars
+                    tables[md_file.stem] = content[:4000]  # Increased to 4000 chars to include all columns
                 except Exception as e:
                     logger.warning(f"Failed to load {md_file}: {e}")
         logger.info(f"Loaded {len(tables)} tables into SchemaSelector")
@@ -50,11 +50,47 @@ class SchemaSelectorAgent(BaseAgent):
         # First, try keyword matching for quick selection
         scored_tables = self._score_tables(query_keywords, query)
         
+        # Detect if we need fact-dim joins for sales queries
+        if 'sales' in query and 'customer' in query:
+            # Find customer dimension and sales fact
+            customer_dim = None
+            sales_fact = None
+            
+            # First pass: look for exact matches
+            for table_name in self.all_tables.keys():
+                table_lower = table_name.lower()
+                if 'customer' in table_lower and 'dim' in table_lower and 'sales' in table_lower:
+                    customer_dim = table_name
+                # Prioritize Fact_ActualSales as the primary sales fact table
+                if table_lower == 'fact_actualsales':
+                    sales_fact = table_name
+            
+            # Second pass: if no actual sales found, look for other sales facts
+            if not sales_fact:
+                for table_name in self.all_tables.keys():
+                    table_lower = table_name.lower()
+                    if 'sales' in table_lower and 'fact' in table_lower:
+                        if 'plan' not in table_lower and 'quotation' not in table_lower:
+                            sales_fact = table_name
+                            break
+            
+            # Add both tables if found
+            if customer_dim and sales_fact:
+                logger.info(f"[{self.name}] Detected fact-dim join need: {sales_fact} + {customer_dim}")
+                selected = [sales_fact, customer_dim]
+                state.selected_tables = selected
+                state.table_descriptions = {t: self.all_tables.get(t, "")[:3500] for t in selected}
+                state.join_relationships = self._extract_join_relationships(selected)
+                state.add_trace(self.name, f"Fact-dim join selected: {selected}")
+                logger.info(f"[{self.name}] Join relationships: {state.join_relationships}")
+                return state
+        
         # If we have good keyword matches, use them
         if scored_tables and scored_tables[0][1] > 5:
             selected = [t[0] for t in scored_tables[:10]]  # Top 10
             state.selected_tables = selected
-            state.table_descriptions = {t: self.all_tables.get(t, "")[:500] for t in selected}
+            state.table_descriptions = {t: self.all_tables.get(t, "")[:3000] for t in selected}
+            state.join_relationships = self._extract_join_relationships(selected)
             state.add_trace(self.name, f"Keyword selected {len(selected)} tables")
             logger.info(f"[{self.name}] Keyword match: {selected[:5]}")
             return state
@@ -100,7 +136,7 @@ Respond ONLY with a JSON object:
                 if valid_tables:
                     state.selected_tables = valid_tables[:10]  # Limit to 10
                     state.table_descriptions = {
-                        t: self.all_tables.get(t, "")[:500] 
+                        t: self.all_tables.get(t, "")[:1500] 
                         for t in valid_tables[:10]
                     }
                     state.add_trace(self.name, f"LLM selected {len(valid_tables)} tables")
@@ -161,6 +197,34 @@ Respond ONLY with a JSON object:
         # Sort by score descending
         scores.sort(key=lambda x: x[1], reverse=True)
         return scores
+    
+    def _extract_join_relationships(self, selected_tables: List[str]) -> Dict[str, List[Dict[str, str]]]:
+        """Extract join relationships from Related Dimensions section"""
+        join_rels = {}
+        
+        for table in selected_tables:
+            content = self.all_tables.get(table, "")
+            join_rels[table] = []
+            
+            # Parse Related Dimensions section
+            related_match = re.search(r'\*\*Related Dimensions:\*\*(.*?)(?=\*\*|$)', content, re.DOTALL)
+            if related_match:
+                section = related_match.group(1)
+                # Extract dimension and join key
+                # Format: - DimName (join over `Key`)
+                for line in section.split('\n'):
+                    line = line.strip()
+                    if line.startswith('-') or line.startswith('*'):
+                        # Extract dimension name and join key
+                        dim_match = re.search(r'\b(Dim_\w+)\b', line)
+                        key_match = re.search(r'`(\w+)`', line)
+                        if dim_match and key_match:
+                            join_rels[table].append({
+                                'related_table': dim_match.group(1),
+                                'join_key': key_match.group(1)
+                            })
+        
+        return join_rels
     
     async def handle_error(self, state: AgentState, error: Exception) -> AgentState:
         """On error, select common tables as fallback"""
