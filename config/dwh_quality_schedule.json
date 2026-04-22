@@ -1,0 +1,17 @@
+{
+  "checks": [
+    "nulls",
+    "duplicates",
+    "freshness",
+    "schema_drift",
+    "stored_procedures"
+  ],
+  "enabled": true,
+  "layers": [
+    "bronze",
+    "silver",
+    "gold"
+  ],
+  "time": "02:00",
+  "timezone": "Local"
+}
