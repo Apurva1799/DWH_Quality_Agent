@@ -1546,7 +1546,7 @@ user_sessions = {}
 llm = KalyaniLangChainLLM()
 
 # Daily monitoring dashboard state
-SCHEDULE_FILE = project_root / "config" / "dwh_quality_schedule.json"
+SCHEDULE_FILE = project_root / "backend" / "config" / "dwh_quality_schedule.json"
 DEFAULT_SCHEDULE_CONFIG = {
     "enabled": True,
     "time": "02:00",

@@ -5,9 +5,29 @@ Starts the DWH Quality Agent dashboard from the backend.
 """
 import sys
 import os
+from pathlib import Path
+
+# Set correct paths before executing
+script_dir = Path(__file__).parent
+backend_dir = script_dir / 'backend'
 
 # Add backend to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'backend'))
+sys.path.insert(0, str(backend_dir))
 
-# Run the main script
-exec(open(os.path.join(os.path.dirname(__file__), 'backend', 'scripts', 'chatgpt_chatbot.py')).read())
+# Set __file__ to point to the actual script being executed
+# This ensures path calculations in chatgpt_chatbot.py work correctly
+script_path = backend_dir / 'scripts' / 'chatgpt_chatbot.py'
+
+# Execute the script with correct __file__ context
+exec_globals = {
+    '__file__': str(script_path),
+    '__name__': '__main__',
+    '__package__': None,
+    '__cached__': None,
+    '__doc__': None,
+    '__loader__': None,
+    '__spec__': None,
+    '__builtins__': __builtins__,
+}
+
+exec(open(script_path).read(), exec_globals)
