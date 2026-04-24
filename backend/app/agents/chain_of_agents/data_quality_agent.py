@@ -678,21 +678,22 @@ class DataQualityAgent(BaseAgent):
             
             # Calculate quality score
             score = 100.0
-            if metrics.null_percentage > self.thresholds['max_null_percentage']:
-                score -= 20
-                issues.append(f"High null percentage: {metrics.null_percentage:.1f}%")
-            
-            if metrics.duplicate_percentage > self.thresholds['max_duplicate_percentage']:
-                score -= 15
-                issues.append(f"High duplicate percentage: {metrics.duplicate_percentage:.1f}%")
-            
-            if metrics.freshness_hours > self.thresholds['max_freshness_hours']:
-                score -= 10
-                issues.append(f"Data stale: {metrics.freshness_hours:.1f} hours old")
             
             if metrics.row_count == 0:
-                score -= 30
+                score = 0
                 issues.append("Table is empty")
+            else:
+                if metrics.null_percentage > self.thresholds['max_null_percentage']:
+                    score -= 20
+                    issues.append(f"High null percentage: {metrics.null_percentage:.1f}%")
+                
+                if metrics.duplicate_percentage > self.thresholds['max_duplicate_percentage']:
+                    score -= 15
+                    issues.append(f"High duplicate percentage: {metrics.duplicate_percentage:.1f}%")
+                
+                if metrics.freshness_hours > self.thresholds['max_freshness_hours']:
+                    score -= 10
+                    issues.append(f"Data stale: {metrics.freshness_hours:.1f} hours old")
             
             metrics.quality_score = max(0, score)
             metrics.issues = issues

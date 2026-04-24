@@ -2,6 +2,7 @@ import json
 import ssl
 import asyncio
 import aiohttp
+import os
 from typing import Any, List, Optional, AsyncIterator
 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -16,8 +17,8 @@ class KalyaniLangChainLLM(BaseChatModel):
     for Kalyani gateway microservice.
     """
 
-    base_url: str = "http://10.7.30.1:8000"
-    model_name: str = "/raid/hf/models/nvidia__Llama-3_1-Nemotron-Ultra-253B-v1"
+    base_url: str = os.getenv("KALYANI_LLM_BASE_URL", "")
+    model_name: str = os.getenv("KALYANI_LLM_MODEL", "")
     ssl_context: Any = None
 
     def __init__(self, **kwargs):

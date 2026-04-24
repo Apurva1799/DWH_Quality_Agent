@@ -1,4 +1,5 @@
 import asyncio
+import os
 from typing import Dict, List, Any, Optional
 from loguru import logger
 
@@ -17,12 +18,14 @@ class LLMManager:
     def _initialize_clients(self):
         """Initialize LLM clients"""
         try:
-            # Use the working Kalyani gateway on port 8000
+            # Use environment variables for Kalyani gateway
+            base_url = os.getenv("KALYANI_LLM_BASE_URL", "")
+            model_name = os.getenv("KALYANI_LLM_MODEL", "")
             self.primary_llm = KalyaniLangChainLLM(
-                base_url="http://10.7.30.1:8000",
-                model_name="/raid/hf/models/nvidia__Llama-3_1-Nemotron-Ultra-253B-v1"
+                base_url=base_url,
+                model_name=model_name
             )
-            logger.info("Kalyani LLM Client initialized on port 8000")
+            logger.info("Kalyani LLM Client initialized")
         except Exception as e:
             logger.error(f"Failed to initialize Kalyani LLM: {e}")
     

@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Data Quality</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
+</head>
+{% if theme %}
+<body data-theme="{{ theme }}">
+{% else %}
+<body data-theme="light">
+{% endif %}
+    <div class="app-shell">
+        <aside class="sidebar">
+            <div class="sidebar-brand">
+                <h2 class="sidebar-title">DWH Quality</h2>
+                <p class="sidebar-subtitle">Monitoring dashboard and refresh activity.</p>
+            </div>
+
+            <nav class="sidebar-nav" aria-label="Dashboard navigation">
+                <a class="nav-link {{ 'active' if active_view == 'quality' else '' }}" href="{{ quality_url }}">
+                    <span class="nav-dot"></span>
+                    <span class="nav-text">
+                        <span class="nav-label">Gold Layer Quality</span>
+                        <span class="nav-hint">Gold DB health</span>
+                    </span>
+                </a>
+                <a class="nav-link {{ 'active' if active_view == 'refresh' else '' }}" href="{{ refresh_url }}">
+                    <span class="nav-dot"></span>
+                    <span class="nav-text">
+                        <span class="nav-label">Job Status</span>
+                        <span class="nav-hint">Latest execution per unique procedure</span>
+                    </span>
+                </a>
+                <a class="nav-link {{ 'active' if active_view == 'sp' else '' }}" href="{{ sp_url }}">
+                    <span class="nav-dot"></span>
+                    <span class="nav-text">
+                        <span class="nav-label">Stored Procedures</span>
+                        <span class="nav-hint">Stored procedure quality &amp; best practices</span>
+                    </span>
+                </a>
+                <a class="nav-link {{ 'active' if active_view == 'intel' else '' }}" href="{{ intel_url }}">
+                    <span class="nav-dot"></span>
+                    <span class="nav-text">
+                        <span class="nav-label">Metadata Layer</span>
+                        <span class="nav-hint">Schema, samples &amp; business context</span>
+                    </span>
+                </a>
+                <div class="nav-divider"></div>
+                <a class="nav-link {{ 'active' if active_view == 'about' else '' }}" href="{{ about_url }}">
+                    <span class="nav-dot"></span>
+                    <span class="nav-text">
+                        <span class="nav-label">About</span>
+                        <span class="nav-hint">Dashboard overview</span>
+                    </span>
+                </a>
+            </nav>
+
+            <div class="sidebar-footer">
+                <a class="footer-btn button-link" href="{{ theme_toggle_url }}">{{ theme_toggle_label }}</a>
+            </div>
+        </aside>
+
+        <div class="content-area">
+            <div class="content-shell">
+                {% if active_view == 'quality' %}
+                <section class="panel">
+                    <div class="page-header">
+                        <div>
+                            <p class="page-kicker">Gold Layer Quality</p>
+                            <h1>Gold Layer Quality</h1>
+                            <p>Gold DB quality table from the latest data quality run.</p>
+                        </div>
+                    </div>
+
+                    <div class="toolbar">
+                        <a class="primary button-link" id="loadGoldBtn" href="{{ refresh_gold_url }}">Load Gold Table</a>
+                        <a class="secondary button-link" id="refreshGoldBtn" href="{{ refresh_gold_url }}">Refresh</a>
+                        <a class="secondary button-link" id="exportCsvBtn" href="{{ export_csv_url }}">Export CSV</a>
+                    </div>
+
+                    <div class="quality-summary-bar">
+                        <div class="qs-card fact">
+                            <span class="qs-value">{{ quality_fact_count }}</span>
+                            <span class="qs-label">Fact Tables</span>
+                        </div>
+                        <div class="qs-card dim">
+                            <span class="qs-value">{{ quality_dim_count }}</span>
+                            <span class="qs-label">Dimension Tables</span>
+                        </div>
+                        <div class="qs-card">
+                            <span class="qs-value">{{ quality_avg_score }}%</span>
+                            <span class="qs-label">Avg Quality Score</span>
+                        </div>
+                        <div class="qs-card healthy">
+                            <span class="qs-value">{{ quality_healthy }}</span>
+                            <span class="qs-label">≥ 80% Healthy</span>
+                        </div>
+                        <div class="qs-card warning">
+                            <span class="qs-value">{{ quality_warning }}</span>
+                            <span class="qs-label">50–79% Warning</span>
+                        </div>
+                        <div class="qs-card critical">
+                            <span class="qs-value">{{ quality_critical }}</span>
+                            <span class="qs-label">< 50% Critical</span>
+                        </div>
+                        {% if quality_empty_count > 0 %}
+                        <div class="qs-card critical">
+                            <span class="qs-value">{{ quality_empty_count }}</span>
+                            <span class="qs-label">Empty Tables</span>
+                        </div>
+                        {% endif %}
+                    </div>
+
+                    <details class="scoring-info">
+                        <summary>Detailed Quality Metrics</summary>
+                        <div class="checks-grid">
+                            <div class="check-item">
+                                <span class="check-bullet"></span>
+                                <span class="check-text"><strong>Uniqueness:</strong> Tables with duplicate rows detected</span>
+                            </div>
+                            <div class="check-item">
+                                <span class="check-bullet"></span>
+                                <span class="check-text"><strong>Null Values:</strong> Columns with excessive null percentages (>10%)</span>
+                            </div>
+                            <div class="check-item">
+                                <span class="check-bullet"></span>
+                                <span class="check-text"><strong>Primary Key:</strong> Tables missing primary key constraints</span>
+                            </div>
+                            <div class="check-item">
+                                <span class="check-bullet"></span>
+                                <span class="check-text"><strong>Foreign Key:</strong> Tables missing foreign key relationships</span>
+                            </div>
+                        </div>
+                        <table class="metrics-detail-table">
+                            <thead>
+                                <tr>
+                                    <th>Metric</th>
+                                    <th>Score Weight</th>
+                                    <th>Issue State</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td>Uniqueness</td>
+                                    <td>15 points</td>
+                                    <td>Dedup check enabled</td>
+                                </tr>
+                                <tr>
+                                    <td>Null Values</td>
+                                    <td>20 points</td>
+                                    <td>Null % > 10% flagged</td>
+                                </tr>
+                                <tr>
+                                    <td>Primary Key</td>
+                                    <td>10 points</td>
+                                    <td>PK missing flagged</td>
+                                </tr>
+                                <tr>
+                                    <td>Foreign Key</td>
+                                    <td>10 points</td>
+                                    <td>FK missing noted</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </details>
+
+                    <div class="status" id="statusBox">{{ initial_status }}</div>
+                    <div class="meta" id="metaBox">{{ initial_meta }}</div>
+
+                    <div class="top-pager">
+                        <span class="pager-info" id="pagerInfo">{{ initial_pager_info }}</span>
+                        <div class="pager-actions">
+                            <a class="secondary button-link {{ 'is-disabled' if initial_prev_disabled else '' }}" id="prevPageBtn" href="{{ prev_page_url }}">&#8592; Previous</a>
+                            <a class="secondary button-link {{ 'is-disabled' if initial_next_disabled else '' }}" id="nextPageBtn" href="{{ next_page_url }}">Next &#8594;</a>
+                        </div>
+                    </div>
+
+                    <div class="table-wrap">
+                        <table class="quality-table">
+                            <colgroup>
+                                <col data-col-index="0">
+                                <col data-col-index="1">
+                                <col data-col-index="2">
+                                <col data-col-index="3">
+                                <col data-col-index="4">
+                                <col data-col-index="5">
+                                <col data-col-index="6">
+                                <col data-col-index="7">
+                            </colgroup>
+                            <thead>
+                                <tr>
+                                    <th><div class="header-cell"><a class="sort-link {{ 'is-active' if sort_by == 'table' else '' }}" href="{{ sort_urls['table'] }}">Table{% if sort_by == 'table' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}</a><span class="column-resizer" data-col-index="0" aria-hidden="true"></span></div></th>
+                                    <th><div class="header-cell"><a class="sort-link {{ 'is-active' if sort_by == 'layer' else '' }}" href="{{ sort_urls['layer'] }}">Layer{% if sort_by == 'layer' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}</a><span class="column-resizer" data-col-index="1" aria-hidden="true"></span></div></th>
+                                    <th><div class="header-cell"><a class="sort-link {{ 'is-active' if sort_by == 'rows' else '' }}" href="{{ sort_urls['rows'] }}">Rows{% if sort_by == 'rows' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}</a><span class="column-resizer" data-col-index="2" aria-hidden="true"></span></div></th>
+                                    <th><div class="header-cell"><a class="sort-link {{ 'is-active' if sort_by == 'column_count' else '' }}" href="{{ sort_urls['column_count'] }}">Cols{% if sort_by == 'column_count' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}</a><span class="column-resizer" data-col-index="3" aria-hidden="true"></span></div></th>
+                                    <th><div class="header-cell"><a class="sort-link {{ 'is-active' if sort_by == 'pk_fk' else '' }}" href="{{ sort_urls['pk_fk'] }}">PK / FK{% if sort_by == 'pk_fk' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}</a><span class="column-resizer" data-col-index="4" aria-hidden="true"></span></div></th>
+                                    <th><div class="header-cell"><a class="sort-link {{ 'is-active' if sort_by == 'quality_score' else '' }}" href="{{ sort_urls['quality_score'] }}">Quality Score{% if sort_by == 'quality_score' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}</a><span class="column-resizer" data-col-index="5" aria-hidden="true"></span></div></th>
+                                    <th><div class="header-cell"><a class="sort-link {{ 'is-active' if sort_by == 'issue_columns' else '' }}" href="{{ sort_urls['issue_columns'] }}">Issue Columns{% if sort_by == 'issue_columns' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}</a><span class="column-resizer" data-col-index="6" aria-hidden="true"></span></div></th>
+                                    <th><div class="header-cell"><a class="sort-link {{ 'is-active' if sort_by == 'issues' else '' }}" href="{{ sort_urls['issues'] }}">Issues{% if sort_by == 'issues' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}</a><span class="column-resizer" data-col-index="7" aria-hidden="true"></span></div></th>
+                                </tr>
+                            </thead>
+                            <tbody id="tableBody">{{ initial_rows_html|safe }}</tbody>
+                        </table>
+                    </div>
+                </section>
+                {% elif active_view == 'refresh' %}
+                <section class="panel">
+                    <div class="page-header">
+                        <div>
+                            <p class="page-kicker">Job Status</p>
+                            <h1>Job Status</h1>
+                            <p>Latest execution per unique procedure.</p>
+                        </div>
+                    </div>
+                    <div class="toolbar">
+                        <button type="button" class="secondary button-link" onclick="exportRefreshCSV()">Export CSV</button>
+                        <button type="button" class="secondary button-link" onclick="window.location.reload()">Refresh</button>
+                    </div>
+                    <div class="status" id="refreshStatusBox">{{ refresh_summary_status }}</div>
+                    <div class="meta" id="refreshMetaBox">{{ refresh_summary_meta }}</div>
+
+                    <div class="top-pager">
+                        <span class="pager-info" id="refreshPagerInfo">{{ refresh_pager_info }}</span>
+                        <div class="pager-actions">
+                            <a class="secondary button-link {{ 'is-disabled' if refresh_prev_disabled else '' }}" id="refreshPrevBtn" href="{{ refresh_prev_page_url }}">&#8592; Previous</a>
+                            <a class="secondary button-link {{ 'is-disabled' if refresh_next_disabled else '' }}" id="refreshNextBtn" href="{{ refresh_next_page_url }}">Next &#8594;</a>
+                        </div>
+                    </div>
+
+                    <div class="table-wrap">
+                        <table class="data-table refresh-table">
+                            <thead>{{ refresh_table_headers_html|safe }}</thead>
+                            <tbody>{{ refresh_table_rows_html|safe }}</tbody>
+                        </table>
+                    </div>
+                </section>
+                {% elif active_view == 'sp' %}
+                <section class="panel">
+                    <div class="page-header">
+                        <div>
+                            <p class="page-kicker">Stored Procedures</p>
+                            <h1>Stored Procedures</h1>
+                            <p>Rule-based quality scores for all stored procedures.</p>
+                        </div>
+                    </div>
+                    <div class="toolbar">
+                        <button type="button" class="primary button-link" id="spLlmBtn" onclick="runSpLlmAnalysis()">Analyze with AI</button>
+                        <button type="button" class="secondary button-link" onclick="window.location.href='{{ sp_refresh_url }}'">Refresh</button>
+                        <button type="button" class="secondary button-link" onclick="exportSpCSV()">Export CSV</button>
+                    </div>
+                    <div class="status" id="spStatusBox">{{ sp_status }}</div>
+                    <div class="meta" id="spMetaBox">{{ sp_meta }}</div>
+
+                    <details class="scoring-info">
+                        <summary>Code Quality Parameters Explained</summary>
+                        <table class="metrics-table">
+                            <thead>
+                                <tr>
+                                    <th>Parameter</th>
+                                    <th>Importance</th>
+                                    <th>Score Weight</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td><strong>SET NOCOUNT ON</strong></td>
+                                    <td>Reduces network traffic by suppressing the "n rows affected" message. Improves performance for procedures with multiple operations.</td>
+                                    <td>10 points</td>
+                                </tr>
+                                <tr>
+                                    <td><strong>SET XACT_ABORT ON</strong></td>
+                                    <td>Automatically rolls back transactions on errors. Prevents orphaned transactions and locks, ensuring data consistency.</td>
+                                    <td>15 points</td>
+                                </tr>
+                                <tr>
+                                    <td><strong>TRY/CATCH Block</strong></td>
+                                    <td>Structured error handling. Allows graceful error recovery, logging, and proper cleanup. Essential for production code.</td>
+                                    <td>20 points</td>
+                                </tr>
+                                <tr>
+                                    <td><strong>Parameterized Inputs</strong></td>
+                                    <td>Prevents SQL injection, improves query plan caching, and makes procedures reusable.</td>
+                                    <td>10 points</td>
+                                </tr>
+                                <tr>
+                                    <td><strong>Transaction Management</strong></td>
+                                    <td>Explicit BEGIN/COMMIT/ROLLBACK ensures atomic operations. Data integrity is maintained even if errors occur.</td>
+                                    <td>15 points</td>
+                                </tr>
+                                <tr>
+                                    <td><strong>Comments & Documentation</strong></td>
+                                    <td>Improves maintainability. Procedures should have headers explaining purpose, parameters, and changes.</td>
+                                    <td>10 points</td>
+                                </tr>
+                                <tr>
+                                    <td><strong>No OR in WHERE/JOIN</strong></td>
+                                    <td>OR conditions can prevent index usage, causing table scans. Consider UNION ALL for better performance.</td>
+                                    <td>10 points</td>
+                                </tr>
+                                <tr>
+                                    <td><strong>Proper Naming Convention</strong></td>
+                                    <td>Clear, consistent naming (e.g., sp_ prefix) improves discoverability and follows best practices.</td>
+                                    <td>10 points</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </details>
+
+                    <div class="top-pager">
+                        <span class="pager-info" id="spPagerInfo">{{ sp_pager_info }}</span>
+                        <div class="pager-actions">
+                            <a class="secondary button-link {{ 'is-disabled' if sp_prev_disabled else '' }}" id="spPrevBtn" href="{{ sp_prev_page_url }}">&#8592; Previous</a>
+                            <a class="secondary button-link {{ 'is-disabled' if sp_next_disabled else '' }}" id="spNextBtn" href="{{ sp_next_page_url }}">Next &#8594;</a>
+                        </div>
+                    </div>
+
+                    <div class="table-wrap" id="spTableWrap">
+                        <table class="data-table" id="spTable">
+                            <thead>
+                                <tr>
+                                    <th><a href="{{ sp_sort_urls['sp_name'] }}">SP Name{% if sp_sort_by == 'sp_name' %} {{ '▲' if sp_sort_dir == 'asc' else '▼' }}{% endif %}</a></th>
+                                    <th><a href="{{ sp_sort_urls['schema_name'] }}">Schema{% if sp_sort_by == 'schema_name' %} {{ '▲' if sp_sort_dir == 'asc' else '▼' }}{% endif %}</a></th>
+                                    <th><a href="{{ sp_sort_urls['last_modified'] }}">Last Modified{% if sp_sort_by == 'last_modified' %} {{ '▲' if sp_sort_dir == 'asc' else '▼' }}{% endif %}</a></th>
+                                    <th style="text-align:center"><a href="{{ sp_sort_urls['parameter_count'] }}">Params{% if sp_sort_by == 'parameter_count' %} {{ '▲' if sp_sort_dir == 'asc' else '▼' }}{% endif %}</a></th>
+                                    <th><a href="{{ sp_sort_urls['quality_score'] }}">Quality Score{% if sp_sort_by == 'quality_score' %} {{ '▲' if sp_sort_dir == 'asc' else '▼' }}{% endif %}</a></th>
+                                    <th>Code Quality Issues</th>
+                                    <th>AI Recommendations</th>
+                                    <th style="text-align:center">Analyze</th>
+                                </tr>
+                            </thead>
+                            <tbody id="spTableBody">{{ sp_rows_html|safe }}</tbody>
+                        </table>
+                    </div>
+                </section>
+                {% elif active_view == 'intel' %}
+                <section class="panel">
+                    <div class="page-header">
+                        <div>
+                            <p class="page-kicker">Metadata Layer</p>
+                            <h1>Metadata Layer</h1>
+                            <p>Schema, samples &amp; business context.</p>
+                        </div>
+                    </div>
+                    <div class="toolbar">
+                        <input type="text" class="intel-search" id="intelSearch" placeholder="Search tables..." oninput="filterIntelCards()">
+                        <div class="intel-filter-row">
+                            <a href="{{ url_for('home', theme=theme, view='intel', filter='all') }}" class="intel-filter-btn {{ 'active' if intel_filter == 'all' else '' }}">All</a>
+                            <a href="{{ url_for('home', theme=theme, view='intel', filter='fact') }}" class="intel-filter-btn {{ 'active' if intel_filter == 'fact' else '' }}">Facts</a>
+                            <a href="{{ url_for('home', theme=theme, view='intel', filter='dim') }}" class="intel-filter-btn {{ 'active' if intel_filter == 'dim' else '' }}">Dimensions</a>
+                        </div>
+                        <button type="button" class="secondary button-link" onclick="window.location.reload()">Refresh</button>
+                    </div>
+                    <div class="meta" id="intelMeta">{{ intel_total }} tables</div>
+
+                    <div class="top-pager">
+                        <span class="pager-info" id="intelPagerInfo">{{ intel_pager_info }}</span>
+                        <div class="pager-actions">
+                            <a class="secondary button-link {{ 'is-disabled' if intel_prev_disabled else '' }}" id="intelPrevBtn" href="{{ intel_prev_page_url }}">&#8592; Previous</a>
+                            <a class="secondary button-link {{ 'is-disabled' if intel_next_disabled else '' }}" id="intelNextBtn" href="{{ intel_next_page_url }}">Next &#8594;</a>
+                        </div>
+                    </div>
+
+                    <div class="intel-grid" id="intelGrid">{{ intel_cards_html|safe }}</div>
+                </section>
+                {% elif active_view == 'about' %}
+                <section class="panel">
+                    <div class="page-header">
+                        <div>
+                            <p class="page-kicker">About</p>
+                            <h1>About This Dashboard</h1>
+                            <p>A comprehensive overview of the Data Warehouse Quality Agent.</p>
+                        </div>
+                    </div>
+
+                    <div class="about-content">
+                        <h2>Welcome to DWH Quality Tool</h2>
+                        <p>This tool provides real-time monitoring and quality assessment of the data warehouse, focusing on the Gold layer, stored procedures, and metadata management.</p>
+
+                        <div class="about-sections">
+                            <div class="about-section">
+                                <h3>Gold Layer Quality</h3>
+                                <p>Monitor the health and quality of the Gold database tables. This tab provides:</p>
+                                <ul>
+                                    <li><strong>Quality Scores:</strong> Overall health indicators for each table (0-100 scale)</li>
+                                    <li><strong>Issue Detection:</strong> Identifies null values, duplicates, and constraint violations</li>
+                                    <li><strong>Detailed Metrics:</strong> Uniqueness, null percentages, and PK/FK presence</li>
+                                    <li><strong>Score Weights:</strong> See how each metric contributes to the overall quality score</li>
+                                </ul>
+                            </div>
+
+                            <div class="about-section">
+                                <h3>Job Status</h3>
+                                <p>Track the execution status of data refresh jobs and stored procedures:</p>
+                                <ul>
+                                    <li><strong>Latest Execution:</strong> Most recent run status for each procedure</li>
+                                    <li><strong>Execution Time:</strong> Duration and timestamp of last run</li>
+                                    <li><strong>Status Indicators:</strong> Success, failure, or in-progress states</li>
+                                </ul>
+                            </div>
+
+                            <div class="about-section">
+                                <h3>Stored Procedures</h3>
+                                <p>Analyze the code quality of all stored procedures in the database:</p>
+                                <ul>
+                                    <li><strong>Quality Scores:</strong> Rule-based assessment of best practices</li>
+                                    <li><strong>Code Issues:</strong> Identifies missing error handling, transaction management, and more</li>
+                                    <li><strong>AI Analysis:</strong> Optional AI-powered code review and suggestions</li>
+                                    <li><strong>Best Practices Guide:</strong> Collapsible table explaining quality parameters</li>
+                                </ul>
+                            </div>
+
+                            <div class="about-section">
+                                <h3>Metadata Layer</h3>
+                                <p>Explore the schema and business context of all tables in the data warehouse:</p>
+                                <ul>
+                                    <li><strong>Table Cards:</strong> Visual overview of each table with key information</li>
+                                    <li><strong>Column Details:</strong> Data types, sample values, and descriptions</li>
+                                    <li><strong>Business Context:</strong> Grain information and related dimensions</li>
+                                    <li><strong>Filtering:</strong> Filter by Fact tables or Dimension tables with pagination</li>
+                                </ul>
+                            </div>
+                        </div>
+
+                        <div class="about-footer">
+                            <h3>Getting Started</h3>
+                            <p>Start by exploring the <strong>Gold Layer Quality</strong> tab to understand the current state of the data. Use the <strong>Job Status</strong> tab to monitor refresh operations, and check <strong>Stored Procedures</strong> for code quality insights. The <strong>Metadata Layer</strong> provides comprehensive documentation for all the tables.</p>
+                        </div>
+                    </div>
+                </section>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Pass template variables to JS
+        const spRecordsJson = {{ sp_records_json|safe }};
+        const refreshRecordsJson = {{ refresh_records_json|safe }};
+        const initialMetrics = {{ initial_metrics_json|safe }};
+        const initialCurrentPage = {{ initial_current_page }};
+        const pageSize = {{ table_page_size }};
+        const activeView = {{ active_view|tojson }};
+
+        // Export SP CSV function
+        function exportSpCSV() {
+            console.log('exportSpCSV called');
+            console.log('spRecordsJson:', spRecordsJson);
+            console.log('spRecordsJson length:', spRecordsJson ? spRecordsJson.length : 'undefined');
+
+            if (!spRecordsJson || !spRecordsJson.length) {
+                console.warn('No SP records to export');
+                alert('No data available to export. Please refresh the page first.');
+                return;
+            }
+            const header = ['SP Name','Schema','Last Modified','Params','Quality Score','Code Quality Issues'];
+            const rows = spRecordsJson.map(r => {
+                const issuesText = Array.isArray(r.issues) ? r.issues.join('; ') : (r.issues || '');
+                return [
+                    '"' + (r.sp_name || '').replace(/"/g, '""') + '"',
+                    '"' + (r.schema_name || '').replace(/"/g, '""') + '"',
+                    '"' + (r.last_modified || '').replace(/"/g, '""') + '"',
+                    r.parameter_count || 0,
+                    r.quality_score !== null && r.quality_score !== undefined ? r.quality_score : '',
+                    '"' + issuesText.replace(/"/g, '""') + '"'
+                ].join(',');
+            });
+            const csv = [header.join(','), ...rows].join('\n');
+            console.log('CSV generated, rows:', rows.length);
+            const a = document.createElement('a');
+            a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
+            a.download = 'sp_analysis.csv';
+            a.style.display = 'none';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            console.log('CSV download triggered');
+        }
+
+        // Export Refresh CSV function
+        function exportRefreshCSV() {
+            console.log('exportRefreshCSV called');
+            console.log('refreshRecordsJson:', refreshRecordsJson);
+            console.log('refreshRecordsJson length:', refreshRecordsJson ? refreshRecordsJson.length : 'undefined');
+
+            if (!refreshRecordsJson || !refreshRecordsJson.length) {
+                console.warn('No refresh records to export');
+                alert('No data available to export. Please refresh the page first.');
+                return;
+            }
+
+            // Get column headers from the first record
+            const header = Object.keys(refreshRecordsJson[0]);
+            const rows = refreshRecordsJson.map(r => {
+                return header.map(col => {
+                    const val = r[col];
+                    if (val === null || val === undefined) return '';
+                    if (typeof val === 'string') return '"' + val.replace(/"/g, '""') + '"';
+                    return String(val);
+                }).join(',');
+            });
+            const csv = [header.join(','), ...rows].join('\n');
+            console.log('CSV generated, rows:', rows.length);
+            const a = document.createElement('a');
+            a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
+            a.download = 'job_status.csv';
+            a.style.display = 'none';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            console.log('CSV download triggered');
+        }
+
+        // Intel search function
+        function filterIntelCards() {
+            const searchInput = document.getElementById('intelSearch');
+            const searchTerm = searchInput ? searchInput.value.toLowerCase() : '';
+            console.log('filterIntelCards called with search term:', searchTerm);
+            
+            const grid = document.getElementById('intelGrid');
+            const cards = grid ? grid.querySelectorAll('.intel-card') : [];
+            console.log('Total cards for search:', cards.length);
+            
+            cards.forEach(card => {
+                const tableName = card.querySelector('.intel-table-name');
+                const desc = card.querySelector('.intel-desc');
+                const nameText = tableName ? tableName.textContent.toLowerCase() : '';
+                const descText = desc ? desc.textContent.toLowerCase() : '';
+                
+                if (nameText.includes(searchTerm) || descText.includes(searchTerm)) {
+                    card.style.display = 'flex';
+                } else {
+                    card.style.display = 'none';
+                }
+            });
+            
+            updateIntelCount();
+        }
+
+        // Intel filter function
+        function filterIntelByType(type) {
+            console.log('filterIntelByType called with type:', type);
+            
+            // Update active button state
+            const buttons = document.querySelectorAll('.intel-filter-btn');
+            console.log('Found filter buttons:', buttons.length);
+            buttons.forEach(btn => {
+                btn.classList.remove('active');
+                if (btn.dataset.type === type) {
+                    btn.classList.add('active');
+                }
+            });
+            
+            const grid = document.getElementById('intelGrid');
+            console.log('Intel grid found:', !!grid);
+            const cards = grid ? grid.querySelectorAll('.intel-card') : [];
+            console.log('Total cards found:', cards.length);
+            
+            let visibleCount = 0;
+            cards.forEach(card => {
+                const cardType = (card.dataset.type || '').toLowerCase();
+                const tableName = card.dataset.table || '';
+                const tableNameLower = tableName.toLowerCase();
+                const hasFactInName = tableNameLower.includes('fact');
+                console.log('Card type:', cardType, 'Table name:', tableName, 'Has fact in name:', hasFactInName);
+                
+                if (type === 'all') {
+                    card.style.display = 'flex';
+                    visibleCount++;
+                } else {
+                    const isFact = cardType === 'fact' || hasFactInName;
+                    const isDim = cardType === 'dimension' || cardType === 'dim';
+                    
+                    if ((type === 'fact' && isFact) || (type === 'dim' && isDim)) {
+                        card.style.display = 'flex';
+                        visibleCount++;
+                    } else {
+                        card.style.display = 'none';
+                    }
+                }
+            });
+            
+            console.log('Visible cards after filter:', visibleCount);
+            updateIntelCount();
+        }
+
+        function updateIntelCount() {
+            const grid = document.getElementById('intelGrid');
+            const visibleCards = grid ? grid.querySelectorAll('.intel-card[style*="flex"], .intel-card:not([style*="none"])') : [];
+            const meta = document.getElementById('intelMeta');
+            if (meta) {
+                meta.textContent = `${visibleCards.length} tables`;
+            }
+        }
+    </script>
+    <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+</body>
+</html>

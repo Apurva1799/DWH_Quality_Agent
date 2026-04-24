@@ -89,7 +89,8 @@ class SQLQueryCorrectorAgent(BaseAgent):
             r'network',
             r'20009',  # pymssql connection error code
             r'adaptive server',
-            r'afdbsrv'  # Your server name
+            r'db server',
+            r'sql server'
         ]
         error_lower = error.lower()
         return any(re.search(pattern, error_lower) for pattern in connection_patterns)

@@ -12,10 +12,12 @@ import csv
 import io
 from pathlib import Path
 
-project_root = Path(__file__).parent.parent
+backend_root = Path(__file__).parent.parent
+project_root = backend_root.parent
+sys.path.insert(0, str(backend_root))
 sys.path.insert(0, str(project_root))
 
-from flask import Flask, render_template_string, request, jsonify, Response, stream_with_context, redirect, url_for
+from flask import Flask, render_template, render_template_string, request, jsonify, Response, stream_with_context, redirect, url_for
 import json
 import logging
 import sys
@@ -40,7 +42,7 @@ from app.agents.chain_of_agents import AgentOrchestrator
 
 load_dotenv()
 
-app = Flask(__name__)
+app = Flask(__name__, template_folder=str(project_root / 'frontend' / 'templates'), static_folder=str(project_root / 'frontend' / 'static'))
 
 # ============ SYSTEM PROMPTS ============
 
@@ -1565,6 +1567,7 @@ runtime_state: Dict[str, Any] = {
 }
 run_history: List[Dict[str, Any]] = []
 scheduler_thread_started = False
+quality_check_lock = threading.Lock()
 
 
 def _bool(value: Any) -> bool:
@@ -1640,13 +1643,13 @@ def _normalize_selection(values: Any, allowed: List[str], fallback: List[str]) -
 
 
 def _normalize_theme(value: Any) -> str:
-    theme = str(value or 'dark').strip().lower()
-    return theme if theme in {'dark', 'light'} else 'dark'
+    theme = str(value or 'light').strip().lower()
+    return theme if theme in {'dark', 'light'} else 'light'
 
 
 def _normalize_dashboard_view(value: Any) -> str:
     view = str(value or 'quality').strip().lower()
-    return view if view in {'quality', 'refresh', 'sp', 'intel'} else 'quality'
+    return view if view in {'quality', 'refresh', 'sp', 'intel', 'about'} else 'quality'
 
 
 def _find_latest_gold_report(history: List[Dict[str, Any]]) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
@@ -1759,7 +1762,79 @@ def _extract_gold_metrics(report: Optional[Dict[str, Any]]) -> List[Dict[str, An
         if isinstance(gold_metrics, list):
             return gold_metrics
 
+    # Fallback: Try to parse markdown table from message field
+    message = report.get("message") if isinstance(report, dict) else None
+    if isinstance(message, str):
+        parsed_metrics = _parse_markdown_table(message)
+        if parsed_metrics:
+            return parsed_metrics
+
     return []
+
+
+def _parse_markdown_table(message: str) -> List[Dict[str, Any]]:
+    """Parse markdown table from quality check message."""
+    import re
+    
+    # Find table rows in markdown format
+    lines = message.split('\n')
+    table_rows = []
+    in_table = False
+    
+    for line in lines:
+        line = line.strip()
+        if line.startswith('|'):
+            # Skip separator line (e.g., |---|---|)
+            if re.match(r'^\|[\s\-:]+\|$', line):
+                continue
+            table_rows.append(line)
+    
+    if len(table_rows) < 2:
+        return []
+    
+    # Parse header
+    header = [cell.strip() for cell in table_rows[0].split('|')[1:-1]]
+    
+    # Parse data rows
+    metrics = []
+    for row in table_rows[1:]:
+        cells = [cell.strip() for cell in row.split('|')[1:-1]]
+        if len(cells) != len(header):
+            continue
+        
+        # Create metric dict from row
+        metric = {}
+        for i, cell in enumerate(cells):
+            if i < len(header):
+                metric[header[i]] = cell
+        
+        # Map to expected format
+        if metric:
+            mapped = {
+                'table': metric.get('Table', ''),
+                'layer': 'gold',
+                'rows': metric.get('Rows', 0),
+                'column_count': metric.get('Cols', 0),
+                'pk': metric.get('PK', ''),
+                'fk': metric.get('FK', ''),
+                'quality_score': _parse_quality_score(metric.get('Quality Score', '100%')),
+                'issues': metric.get('Issues', ''),
+                'column_issues': {}
+            }
+            metrics.append(mapped)
+    
+    return metrics
+
+
+def _parse_quality_score(score_str: str) -> float:
+    """Parse quality score from string like '100%' or '80%'."""
+    if isinstance(score_str, (int, float)):
+        return float(score_str)
+    if isinstance(score_str, str):
+        match = re.search(r'(\d+)', score_str)
+        if match:
+            return float(match.group(1))
+    return 100.0
 
 
 GOLD_TABLE_PAGE_SIZE = 15
@@ -2260,6 +2335,8 @@ SORTABLE_SP_COLUMNS = {'sp_name', 'schema_name', 'last_modified', 'parameter_cou
 _sp_analysis_cache: Optional[Dict[str, Any]] = None
 _sp_llm_cache: Dict[str, Dict[str, Any]] = {}
 _sp_cache_lock = threading.Lock()
+_sp_cache_timestamp: Optional[float] = None
+_SP_CACHE_TTL = 600  # 10 minutes TTL for SP cache
 
 
 def _analyze_sp_rules(name: str, definition: str) -> tuple:
@@ -2402,11 +2479,14 @@ def _fetch_sp_definitions() -> List[Dict[str, Any]]:
 
 
 def _load_sp_analysis(force_refresh: bool = False) -> Optional[Dict[str, Any]]:
-    """Return SP analysis records, using cache unless force_refresh."""
-    global _sp_analysis_cache
+    """Return SP analysis records, using cache with TTL unless force_refresh."""
+    global _sp_analysis_cache, _sp_cache_timestamp
     with _sp_cache_lock:
+        current_time = time.time()
+        # Return cached data if not expired and not forcing refresh
         if not force_refresh and _sp_analysis_cache is not None:
-            return _sp_analysis_cache
+            if _sp_cache_timestamp and (current_time - _sp_cache_timestamp) < _SP_CACHE_TTL:
+                return _sp_analysis_cache
     records = _fetch_sp_definitions()
     if not records:
         return None
@@ -2417,6 +2497,7 @@ def _load_sp_analysis(force_refresh: bool = False) -> Optional[Dict[str, Any]]:
     }
     with _sp_cache_lock:
         _sp_analysis_cache = result
+        _sp_cache_timestamp = time.time()
     return result
 
 
@@ -2494,6 +2575,8 @@ INTEL_PAGE_SIZE = 12
 _METADATA_DIR = os.path.join(os.path.dirname(__file__), '..', 'metadata_md')
 _intel_cache: Optional[Dict[str, Any]] = None
 _intel_cache_lock = threading.Lock()
+_intel_cache_timestamp: Optional[float] = None
+_INTEL_CACHE_TTL = 300  # 5 minutes TTL for Intel cache
 
 
 def _parse_bus_matrix() -> Dict[str, str]:
@@ -2530,7 +2613,8 @@ def _parse_single_md(path: str, grains: Dict[str, str]) -> Optional[Dict[str, An
         raw_name = m2.group(1)
         tbl_type = 'Fact' if raw_name.lower().startswith('fact') else 'Dimension' if raw_name.lower().startswith('dim') else 'Other'
     else:
-        tbl_type = 'Fact' if m.group(1).lower().startswith('fact') else 'Dimension'
+        matched_type = m.group(1).lower()
+        tbl_type = 'Fact' if matched_type.startswith('fact') or matched_type == 'ft' else 'Dimension'
         raw_name = m.group(2)
 
     if '.' in raw_name:
@@ -2611,11 +2695,14 @@ def _fetch_table_stats(schema: str, table_name: str) -> Dict[str, Any]:
 
 
 def _load_table_intel(force_refresh: bool = False) -> Optional[Dict[str, Any]]:
-    """Load and cache all table metadata + live stats."""
-    global _intel_cache
+    """Load and cache all table metadata + live stats with TTL."""
+    global _intel_cache, _intel_cache_timestamp
     with _intel_cache_lock:
+        current_time = time.time()
+        # Return cached data if not expired and not forcing refresh
         if not force_refresh and _intel_cache is not None:
-            return _intel_cache
+            if _intel_cache_timestamp and (current_time - _intel_cache_timestamp) < _INTEL_CACHE_TTL:
+                return _intel_cache
 
     grains = _parse_bus_matrix()
     records: List[Dict[str, Any]] = []
@@ -2643,6 +2730,7 @@ def _load_table_intel(force_refresh: bool = False) -> Optional[Dict[str, Any]]:
     }
     with _intel_cache_lock:
         _intel_cache = result
+        _intel_cache_timestamp = time.time()
     return result
 
 
@@ -3104,7 +3192,7 @@ with dashboard_lock:
     _save_schedule_config_locked()
 
 # Load metadata
-METADATA_PATH = project_root / "metadata_md"
+METADATA_PATH = backend_root / "metadata_md"
 
 def load_metadata():
     """Load all table metadata from markdown files"""
@@ -3316,1709 +3404,12 @@ Respond as a helpful, professional DWH quality assistant."""
 
 # ============ FLASK ROUTES ============
 
-DASHBOARD_TEMPLATE = """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Data Quality</title>
-    <style>
-        :root {
-            --bg: #0b1020;
-            --panel: #111827;
-            --border: rgba(255,255,255,0.08);
-            --text: #e5e7eb;
-            --muted: #94a3b8;
-            --accent: #60a5fa;
-            --shadow: 0 20px 50px rgba(0,0,0,0.35);
-        }
-        * { box-sizing: border-box; }
-        body {
-            margin: 0;
-            font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            background: radial-gradient(circle at top left, rgba(96,165,250,0.12), transparent 28%), var(--bg);
-            color: var(--text);
-        }
-        body[data-theme="light"] {
-            --bg: #f8fafc;
-            --panel: rgba(255,255,255,0.96);
-            --border: rgba(15,23,42,0.12);
-            --text: #0f172a;
-            --muted: #475569;
-            --accent: #2563eb;
-            --shadow: 0 20px 50px rgba(15,23,42,0.08);
-            background: radial-gradient(circle at top left, rgba(37,99,235,0.10), transparent 28%), var(--bg);
-        }
-        .shell {
-            min-height: 100vh;
-            padding: 28px;
-            display: flex;
-            justify-content: center;
-        }
-        .main {
-            width: min(1200px, 100%);
-        }
-        .panel {
-            background: var(--panel);
-            border: 1px solid var(--border);
-            border-radius: 20px;
-            padding: 26px;
-            box-shadow: var(--shadow);
-            isolation: isolate;
-        }
-        h1 {
-            margin: 0 0 8px;
-            font-size: 30px;
-        }
-        p {
-            margin: 0;
-            color: var(--muted);
-            line-height: 1.6;
-        }
-        .toolbar {
-            display: flex;
-            gap: 10px;
-            flex-wrap: wrap;
-            margin-top: 20px;
-            margin-bottom: 16px;
-            position: relative;
-            z-index: 2;
-        }
-        button,
-        .button-link {
-            border: 0;
-            border-radius: 14px;
-            padding: 12px 16px;
-            cursor: pointer;
-            color: white;
-            font-weight: 600;
-            position: relative;
-            z-index: 3;
-            pointer-events: auto;
-        }
-        .button-link {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            text-decoration: none;
-            line-height: 1;
-        }
-        .sort-link {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            flex: 1 1 auto;
-            min-width: 0;
-            color: inherit;
-            text-decoration: none;
-        }
-        .sort-link:hover {
-            text-decoration: underline;
-        }
-        .sort-link.is-active {
-            color: var(--accent);
-        }
-        .primary { background: linear-gradient(135deg, #2563eb, #7c3aed); }
-        .secondary { background: rgba(255,255,255,0.08); }
-        body[data-theme="light"] .secondary { background: rgba(37,99,235,0.08); color: #0f172a; }
-        body[data-theme="light"] .toolbar .button-link,
-        body[data-theme="light"] .pager-actions .button-link {
-            color: #0f172a;
-        }
-        body[data-theme="light"] .sidebar-footer .button-link {
-            color: #0f172a;
-        }
-        body[data-theme="light"] .primary { color: #ffffff; }
-        body[data-theme="light"] .status { background: rgba(37,99,235,0.08); }
-        body[data-theme="light"] table { background: rgba(15,23,42,0.02); }
-        body[data-theme="light"] .layer-tag { background: rgba(37,99,235,0.12); color: #1d4ed8; border-color: rgba(37,99,235,0.16); }
-        body[data-theme="light"] .sidebar { background: rgba(255,255,255,0.82); }
-        body[data-theme="light"] .nav-link.active {
-            background: rgba(37,99,235,0.10);
-            border-color: rgba(37,99,235,0.18);
-        }
-        .button-link.is-disabled {
-            opacity: 0.45;
-            pointer-events: none;
-        }
-        .app-shell {
-            min-height: 100vh;
-            display: flex;
-            width: 100%;
-        }
-        .sidebar {
-            width: 260px;
-            padding: 24px 18px;
-            border-right: 1px solid var(--border);
-            background: rgba(15,23,42,0.22);
-            backdrop-filter: blur(18px);
-            display: flex;
-            flex-direction: column;
-            gap: 18px;
-            flex-shrink: 0;
-            transition: width 0.25s ease, padding 0.25s ease;
-            overflow: hidden;
-        }
-        .sidebar.is-collapsed {
-            width: 92px;
-            padding-left: 12px;
-            padding-right: 12px;
-            overflow: hidden;
-        }
-        .sidebar.is-collapsed .sidebar-title,
-        .sidebar.is-collapsed .sidebar-subtitle,
-        .sidebar.is-collapsed .nav-text {
-            display: none;
-        }
-        .sidebar.is-collapsed .sidebar-brand {
-            align-items: center;
-        }
-        .sidebar.is-collapsed .nav-link {
-            justify-content: center;
-            padding-left: 10px;
-            padding-right: 10px;
-        }
-        .sidebar.is-collapsed .sidebar-footer {
-            align-items: stretch;
-        }
-        .sidebar.is-collapsed .sidebar-footer .button-link {
-            justify-content: center;
-            width: 100%;
-        }
-        .sidebar-brand {
-            display: flex;
-            flex-direction: column;
-            gap: 6px;
-            padding-bottom: 10px;
-            border-bottom: 1px solid var(--border);
-        }
-        .sidebar-title {
-            margin: 0;
-            font-size: 20px;
-            line-height: 1.2;
-        }
-        .sidebar-subtitle {
-            margin: 0;
-            color: var(--muted);
-            font-size: 13px;
-            line-height: 1.5;
-        }
-        .sidebar-nav {
-            display: grid;
-            gap: 8px;
-        }
-        .nav-link {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            padding: 12px 14px;
-            border-radius: 14px;
-            text-decoration: none;
-            color: var(--text);
-            border: 1px solid transparent;
-            transition: background 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
-        }
-        .nav-link:hover {
-            background: rgba(96,165,250,0.08);
-            transform: translateX(2px);
-        }
-        .nav-link.active {
-            background: rgba(96,165,250,0.14);
-            border-color: rgba(96,165,250,0.18);
-        }
-        .nav-dot {
-            width: 10px;
-            height: 10px;
-            border-radius: 999px;
-            background: var(--accent);
-            flex: 0 0 auto;
-        }
-        .nav-text {
-            display: flex;
-            flex-direction: column;
-            gap: 2px;
-        }
-        .nav-label {
-            font-weight: 600;
-            font-size: 14px;
-        }
-        .nav-hint {
-            font-size: 12px;
-            color: var(--muted);
-        }
-        .sidebar-footer .button-link {
-            width: 100%;
-        }
-        .sidebar-toggle-btn {
-            width: 44px;
-            height: 44px;
-            padding: 0;
-            background: rgba(255,255,255,0.06);
-            color: var(--text);
-            border: 1px solid var(--border);
-            text-align: center;
-            justify-content: center;
-            color: var(--text);
-        }
-        .sidebar-toggle-btn:hover {
-            background: rgba(96,165,250,0.12);
-        }
-        .sidebar-toggle-icon {
-            font-size: 18px;
-            line-height: 1;
-        }
-        .content-area {
-            flex: 1;
-            padding: 24px;
-            min-width: 0;
-        }
-        .content-shell {
-            width: min(1400px, 100%);
-            margin: 0 auto;
-        }
-        .status {
-            margin-top: 14px;
-            padding: 12px 14px;
-            border: 1px solid var(--border);
-            border-radius: 14px;
-            color: var(--text);
-            background: rgba(96,165,250,0.10);
-        }
-        .meta {
-            margin-top: 12px;
-            color: var(--muted);
-            font-size: 13px;
-        }
-        .table-wrap {
-            overflow-x: auto;
-            margin-top: 18px;
-            border-radius: 16px;
-            border: 1px solid var(--border);
-            background: rgba(255,255,255,0.02);
-        }
-        .table-footer {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 12px;
-            margin-top: 14px;
-            flex-wrap: wrap;
-            position: relative;
-            z-index: 2;
-        }
-        .pager-info {
-            color: var(--muted);
-            font-size: 13px;
-        }
-        .pager-actions {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            flex-wrap: wrap;
-        }
-        .pager-actions button {
-            min-width: 104px;
-        }
-        .quality-summary-bar {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 10px;
-            margin-bottom: 14px;
-        }
-        .qs-card {
-            background: var(--card-bg, rgba(255,255,255,0.06));
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 10px 16px;
-            display: flex;
-            flex-direction: column;
-            gap: 2px;
-            min-width: 110px;
-        }
-        .qs-card .qs-value { font-size: 22px; font-weight: 700; line-height: 1.1; }
-        .qs-card .qs-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
-        .qs-card.healthy .qs-value { color: #22c55e; }
-        .qs-card.warning .qs-value { color: #f59e0b; }
-        .qs-card.critical .qs-value { color: #ef4444; }
-        .qs-card.fact .qs-value { color: var(--primary, #0369a1); }
-        .qs-card.dim .qs-value  { color: #8b5cf6; }
-        .scoring-info {
-            background: var(--card-bg, rgba(255,255,255,0.04));
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 12px 16px;
-            margin-bottom: 10px;
-            font-size: 12px;
-        }
-        .scoring-info summary {
-            cursor: pointer;
-            font-weight: 600;
-            font-size: 12px;
-            color: var(--muted);
-            user-select: none;
-            list-style: none;
-        }
-        .scoring-info summary::before { content: '▶  '; font-size: 10px; }
-        .scoring-info[open] summary::before { content: '▼  '; }
-        .scoring-info .checks-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 8px;
-            margin-top: 10px;
-        }
-        .scoring-info .check-item {
-            display: flex;
-            flex-direction: column;
-            gap: 2px;
-            padding: 8px 10px;
-            border-radius: 6px;
-            background: var(--hover-bg, rgba(0,0,0,0.04));
-        }
-        .scoring-info .check-name { font-weight: 600; font-size: 12px; }
-        .scoring-info .check-desc { font-size: 11px; color: var(--muted); }
-        .scoring-info .check-penalty { font-size: 11px; font-weight: 600; color: #ef4444; }
-        .top-pager {
-            display: flex;
-            align-items: center;
-            justify-content: flex-end;
-            gap: 10px;
-            padding: 6px 0 10px 0;
-            flex-wrap: wrap;
-        }
-        .top-pager .pager-info { font-size: 12px; }
-        .btn-sp-analyze {
-            background: none;
-            border: 1px solid var(--border);
-            border-radius: 4px;
-            color: var(--primary, #0369a1);
-            cursor: pointer;
-            font-size: 12px;
-            padding: 3px 8px;
-            transition: background 0.15s;
-        }
-        .btn-sp-analyze:hover { background: var(--hover-bg, rgba(0,0,0,0.06)); }
-        .sp-modal-overlay {
-            display: none;
-            position: fixed;
-            inset: 0;
-            background: rgba(0,0,0,0.55);
-            z-index: 9000;
-            align-items: center;
-            justify-content: center;
-        }
-        .sp-modal-overlay.open { display: flex; }
-        .sp-modal {
-            background: var(--card-bg, #fff);
-            border-radius: 10px;
-            box-shadow: 0 8px 40px rgba(0,0,0,0.3);
-            width: min(860px, 94vw);
-            max-height: 88vh;
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-        }
-        .sp-modal-header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 16px 20px;
-            border-bottom: 1px solid var(--border);
-            gap: 12px;
-        }
-        .sp-modal-header h2 { font-size: 15px; margin: 0; word-break: break-all; }
-        .sp-modal-close {
-            background: none;
-            border: none;
-            cursor: pointer;
-            font-size: 20px;
-            color: var(--muted);
-            padding: 0 4px;
-            line-height: 1;
-        }
-        .sp-modal-body {
-            overflow-y: auto;
-            padding: 18px 20px;
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            gap: 16px;
-        }
-        .sp-modal-section-title {
-            font-size: 11px;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: .08em;
-            color: var(--muted);
-            margin-bottom: 6px;
-        }
-        .sp-definition-box {
-            background: var(--code-bg, #1e1e2e);
-            color: var(--code-fg, #cdd6f4);
-            border-radius: 6px;
-            padding: 12px 14px;
-            font-family: monospace;
-            font-size: 12px;
-            line-height: 1.55;
-            white-space: pre-wrap;
-            word-break: break-word;
-            max-height: 300px;
-            overflow-y: auto;
-        }
-        .sp-llm-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
-        .sp-llm-list li { display: flex; gap: 8px; font-size: 13px; }
-        .sp-llm-list li::before { content: '→'; color: var(--primary, #0369a1); flex-shrink: 0; }
-        .sp-modal-footer {
-            padding: 12px 20px;
-            border-top: 1px solid var(--border);
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 10px;
-            flex-wrap: wrap;
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            background: rgba(255,255,255,0.02);
-            table-layout: fixed;
-        }
-        th, td {
-            padding: 12px 10px;
-            text-align: left;
-            border-bottom: 1px solid var(--border);
-            font-size: 14px;
-            vertical-align: top;
-            overflow-wrap: anywhere;
-        }
-        th {
-            color: var(--muted);
-            font-size: 12px;
-            text-transform: uppercase;
-            letter-spacing: 0.08em;
-            position: relative;
-            user-select: none;
-        }
-        tbody tr:hover {
-            background: rgba(96,165,250,0.05);
-        }
-        .quality-table {
-            min-width: 1320px;
-        }
-        .quality-table col:nth-child(1) { width: 230px; }
-        .quality-table col:nth-child(2) { width: 100px; }
-        .quality-table col:nth-child(3) { width: 90px; }
-        .quality-table col:nth-child(4) { width: 90px; }
-        .quality-table col:nth-child(5) { width: 240px; }
-        .quality-table col:nth-child(6) { width: 120px; }
-        .quality-table col:nth-child(7) { width: 280px; }
-        .quality-table col:nth-child(8) { width: 300px; }
-        .refresh-table col:nth-child(1) { width: 260px; }
-        .refresh-table col:nth-child(2) { width: 240px; }
-        .refresh-table col:nth-child(3) { width: 220px; }
-        .refresh-table {
-            min-width: 760px;
-        }
-        .status-pill {
-            display: inline-flex;
-            align-items: center;
-            padding: 4px 10px;
-            border-radius: 999px;
-            font-size: 12px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.04em;
-        }
-        .status-healthy { background: rgba(34,197,94,0.12); color: #22c55e; }
-        .status-warning { background: rgba(245,158,11,0.12); color: #f59e0b; }
-        .status-error { background: rgba(239,68,68,0.12); color: #ef4444; }
-        .status-ended { background: rgba(34,197,94,0.12); color: #22c55e; }
-        .status-failed { background: rgba(239,68,68,0.12); color: #ef4444; }
-        .status-idle { background: rgba(148,163,184,0.12); color: #94a3b8; }
-        .score-pill { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
-        .score-high { background: rgba(34,197,94,0.15); color: #22c55e; }
-        .score-med  { background: rgba(234,179,8,0.15);  color: #eab308; }
-        .score-low  { background: rgba(239,68,68,0.15);  color: #ef4444; }
-        .issue-cell { font-size: 12px; color: var(--muted); max-width: 380px; word-break: break-word; }
-        .issue-tag { display: inline-block; background: rgba(239,68,68,0.1); color: #ef4444; border-radius: 4px; padding: 1px 6px; margin: 1px 2px; font-size: 11px; white-space: normal; }
-        .intel-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); gap: 18px; margin-top: 16px; }
-        .intel-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 20px 22px; display: flex; flex-direction: column; gap: 12px; }
-        .intel-card-header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-        .intel-table-name { font-size: 13px; font-weight: 700; color: var(--text); font-family: monospace; }
-        .intel-badge { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; padding: 2px 8px; border-radius: 999px; flex-shrink: 0; }
-        .badge-fact { background: rgba(139,92,246,.15); color: #8b5cf6; }
-        .badge-dim  { background: rgba(14,165,233,.15); color: #0ea5e9; }
-        .intel-meta { margin-left: auto; font-size: 11px; color: var(--muted); white-space: nowrap; }
-        .intel-desc { font-size: 13px; color: var(--text); line-height: 1.6; margin: 0; }
-        .intel-grain { font-size: 12px; color: var(--muted); border-left: 3px solid var(--border); padding: 4px 0 4px 10px; }
-        .intel-grain-label { font-weight: 600; color: var(--muted); margin-right: 4px; }
-        .intel-section-label { display: block; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin-bottom: 6px; }
-        .intel-details { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
-        .intel-details-toggle { font-size: 12px; font-weight: 600; color: var(--muted); padding: 7px 12px; cursor: pointer; list-style: none; user-select: none; }
-        .intel-details-toggle::-webkit-details-marker { display: none; }
-        .intel-details-toggle::before { content: '▶ '; font-size: 9px; }
-        details[open] .intel-details-toggle::before { content: '▼ '; }
-        .intel-col-list { margin: 0; padding: 8px 12px 10px; list-style: none; display: flex; flex-direction: column; gap: 5px; }
-        .intel-col-list li { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; font-size: 12px; }
-        .col-name { font-weight: 600; color: var(--text); min-width: 160px; }
-        .col-type { font-size: 10px; color: var(--muted); background: var(--hover); border-radius: 3px; padding: 1px 5px; flex-shrink: 0; }
-        .col-sample { font-size: 11px; color: var(--muted); font-style: italic; }
-        .col-more-note { color: var(--muted); font-style: italic; }
-        .intel-kv-block { background: var(--hover); border-radius: 6px; padding: 10px 14px; }
-        .kv-row { display: flex; gap: 10px; align-items: baseline; padding: 3px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
-        .kv-row:last-child { border-bottom: none; }
-        .kv-key { font-weight: 600; color: var(--muted); min-width: 170px; flex-shrink: 0; }
-        .kv-val { color: var(--text); word-break: break-all; }
-        .intel-rels { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
-        .rel-badge { font-size: 10px; background: rgba(34,197,94,.1); color: #22c55e; border-radius: 4px; padding: 2px 7px; }
-        .rel-more { background: var(--hover); color: var(--muted); }
-        .intel-summary-block { background: rgba(139,92,246,.07); border-left: 3px solid #8b5cf6; border-radius: 4px; padding: 10px 14px; font-size: 12.5px; color: var(--text); line-height: 1.7; }
-        .intel-summary-block strong { color: var(--text); font-weight: 700; }
-        .intel-search { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 6px 12px; color: var(--text); font-size: 13px; width: 260px; }
-        .intel-filter-row { display: flex; gap: 6px; margin-top: 8px; }
-        .intel-filter-btn { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 4px 14px; font-size: 12px; color: var(--muted); cursor: pointer; }
-        .intel-filter-btn.active { border-color: #8b5cf6; color: #8b5cf6; background: rgba(139,92,246,.08); }
-        .header-cell {
-            display: flex;
-            align-items: center;
-            justify-content: flex-start;
-            gap: 8px;
-            width: 100%;
-            min-height: 24px;
-            position: relative;
-            padding-right: 14px;
-        }
-        .column-resizer {
-            position: absolute;
-            top: -6px;
-            right: -2px;
-            bottom: -6px;
-            width: 14px;
-            cursor: col-resize;
-            flex: 0 0 14px;
-            touch-action: none;
-            z-index: 2;
-        }
-        .column-resizer::after {
-            content: '';
-            position: absolute;
-            top: 18%;
-            bottom: 18%;
-            right: 5px;
-            width: 3px;
-            border-radius: 999px;
-            background: var(--border);
-            transition: background 0.2s ease;
-        }
-        .header-cell:hover .column-resizer::after {
-            background: var(--accent);
-        }
-        .layer-tag {
-            display: inline-block;
-            padding: 4px 10px;
-            border-radius: 999px;
-            background: rgba(96,165,250,0.15);
-            color: #bfdbfe;
-            font-size: 12px;
-            border: 1px solid rgba(96,165,250,0.2);
-        }
-        .pkfk-block {
-            display: grid;
-            gap: 4px;
-            line-height: 1.35;
-            white-space: normal;
-        }
-        .kv-label {
-            display: inline-block;
-            min-width: 28px;
-            color: var(--muted);
-            font-size: 12px;
-            text-transform: uppercase;
-            letter-spacing: 0.06em;
-        }
-        .page-header {
-            display: flex;
-            justify-content: space-between;
-            gap: 18px;
-            align-items: flex-start;
-            flex-wrap: wrap;
-        }
-        .page-kicker {
-            margin: 0 0 8px;
-            color: var(--accent);
-            font-size: 12px;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 0.12em;
-        }
-        @media (max-width: 720px) {
-            .app-shell { flex-direction: column; }
-            .sidebar { width: 100%; }
-            .content-area { padding: 18px; }
-            h1 { font-size: 28px; }
-        }
-    </style>
-</head>
-<body data-theme="{{ theme }}">
-    <div class="app-shell">
-        <aside class="sidebar">
-            <div class="sidebar-brand">
-                <h2 class="sidebar-title">DWH Quality</h2>
-                <p class="sidebar-subtitle">Monitoring dashboard and refresh activity.</p>
-            </div>
-
-            <nav class="sidebar-nav" aria-label="Dashboard navigation">
-                <a class="nav-link {{ 'active' if active_view == 'quality' else '' }}" href="{{ quality_url }}">
-                    <span class="nav-dot"></span>
-                    <span class="nav-text">
-                        <span class="nav-label">Data Quality</span>
-                        <span class="nav-hint">Gold DB health</span>
-                    </span>
-                </a>
-                <a class="nav-link {{ 'active' if active_view == 'refresh' else '' }}" href="{{ refresh_url }}">
-                    <span class="nav-dot"></span>
-                    <span class="nav-text">
-                        <span class="nav-label">Data Refresh Status</span>
-                        <span class="nav-hint">Latest execution per unique procedure</span>
-                    </span>
-                </a>
-                <a class="nav-link {{ 'active' if active_view == 'sp' else '' }}" href="{{ sp_url }}">
-                    <span class="nav-dot"></span>
-                    <span class="nav-text">
-                        <span class="nav-label">SP Analysis</span>
-                        <span class="nav-hint">Stored procedure quality &amp; best practices</span>
-                    </span>
-                </a>
-                <a class="nav-link {{ 'active' if active_view == 'intel' else '' }}" href="{{ intel_url }}">
-                    <span class="nav-dot"></span>
-                    <span class="nav-text">
-                        <span class="nav-label">Table Intelligence</span>
-                        <span class="nav-hint">Schema, samples &amp; business context</span>
-                    </span>
-                </a>
-            </nav>
-
-            <div class="sidebar-footer">
-                <button type="button" class="footer-btn button-link sidebar-toggle-btn" id="sidebarToggleBtn" aria-label="Collapse sidebar" title="Collapse sidebar">
-                    <span class="sidebar-toggle-icon" id="sidebarToggleIcon" aria-hidden="true">❮</span>
-                </button>
-                <a class="footer-btn button-link" href="{{ theme_toggle_url }}">{{ theme_toggle_label }}</a>
-            </div>
-        </aside>
-
-        <div class="content-area">
-            <div class="content-shell">
-                {% if active_view == 'quality' %}
-                <section class="panel">
-                    <div class="page-header">
-                        <div>
-                            <p class="page-kicker">Data Quality</p>
-                            <h1>Data Quality</h1>
-                            <p>Gold DB quality table from the latest data quality run. Drag the column edges to resize them.</p>
-                        </div>
-                    </div>
-
-                    <div class="toolbar">
-                        <a class="primary button-link" id="loadGoldBtn" href="{{ refresh_gold_url }}">Load Gold Table</a>
-                        <a class="secondary button-link" id="refreshGoldBtn" href="{{ refresh_gold_url }}">Refresh</a>
-                        <a class="secondary button-link" id="exportCsvBtn" href="{{ export_csv_url }}">Export CSV</a>
-                    </div>
-
-                    {% if initial_metrics_json != '[]' %}
-                    <div class="quality-summary-bar">
-                        <div class="qs-card fact">
-                            <span class="qs-value">{{ quality_fact_count }}</span>
-                            <span class="qs-label">Fact Tables</span>
-                        </div>
-                        <div class="qs-card dim">
-                            <span class="qs-value">{{ quality_dim_count }}</span>
-                            <span class="qs-label">Dimension Tables</span>
-                        </div>
-                        <div class="qs-card">
-                            <span class="qs-value">{{ quality_avg_score }}%</span>
-                            <span class="qs-label">Avg Quality Score</span>
-                        </div>
-                        <div class="qs-card healthy">
-                            <span class="qs-value">{{ quality_healthy }}</span>
-                            <span class="qs-label">&#8805; 80% Healthy</span>
-                        </div>
-                        <div class="qs-card warning">
-                            <span class="qs-value">{{ quality_warning }}</span>
-                            <span class="qs-label">50–79% Warning</span>
-                        </div>
-                        <div class="qs-card critical">
-                            <span class="qs-value">{{ quality_critical }}</span>
-                            <span class="qs-label">&lt; 50% Critical</span>
-                        </div>
-                        {% if quality_empty_count > 0 %}
-                        <div class="qs-card critical">
-                            <span class="qs-value">{{ quality_empty_count }}</span>
-                            <span class="qs-label">Empty Tables</span>
-                        </div>
-                        {% endif %}
-                    </div>
-
-                    <details class="scoring-info">
-                        <summary>How scores are calculated</summary>
-                        <div class="checks-grid">
-                            <div class="check-item">
-                                <span class="check-name">Null Check</span>
-                                <span class="check-desc">Scans key columns (IDs, dates, amounts) for null values per row</span>
-                                <span class="check-penalty">&#8722;20 pts if overall null % &gt; 10%</span>
-                            </div>
-                            <div class="check-item">
-                                <span class="check-name">Column-level Nulls</span>
-                                <span class="check-desc">Each column with &gt; 10% nulls is flagged individually</span>
-                                <span class="check-penalty">&#8722;5 pts per column (max &#8722;20)</span>
-                            </div>
-                            <div class="check-item">
-                                <span class="check-name">Duplicate Check</span>
-                                <span class="check-desc">Checks for duplicate rows relative to primary column</span>
-                                <span class="check-penalty">&#8722;15 pts if dup % &gt; 5%</span>
-                            </div>
-                            <div class="check-item">
-                                <span class="check-name">Data Freshness</span>
-                                <span class="check-desc">Checks timestamp/date columns to detect stale data</span>
-                                <span class="check-penalty">&#8722;10 pts if last update &gt; 24 hours ago</span>
-                            </div>
-                            <div class="check-item">
-                                <span class="check-name">Empty Table</span>
-                                <span class="check-desc">If a table has 0 rows it cannot be evaluated</span>
-                                <span class="check-penalty">Score = 0 (no data to assess)</span>
-                            </div>
-                        </div>
-                        <p style="margin-top:10px;color:var(--muted);font-size:11px">
-                            Thresholds — Null: &gt;10% | Duplicates: &gt;5% | Staleness: &gt;24h &nbsp;·&nbsp;
-                            Healthy &#8805; 80% &nbsp; Warning 50–79% &nbsp; Critical &lt; 50%
-                        </p>
-                    </details>
-                    {% endif %}
-
-                    <div class="status" id="statusBox">{{ initial_status }}</div>
-                    <div class="meta" id="metaBox">{{ initial_meta }}</div>
-
-                    <div class="top-pager">
-                        <span class="pager-info" id="pagerInfo">{{ initial_pager_info }}</span>
-                        <div class="pager-actions">
-                            <a class="secondary button-link {{ 'is-disabled' if initial_prev_disabled else '' }}" id="prevPageBtn" href="{{ prev_page_url }}">&#8592; Previous</a>
-                            <a class="secondary button-link {{ 'is-disabled' if initial_next_disabled else '' }}" id="nextPageBtn" href="{{ next_page_url }}">Next &#8594;</a>
-                        </div>
-                    </div>
-
-                    <div class="table-wrap">
-                        <table class="quality-table">
-                            <colgroup>
-                                <col data-col-index="0">
-                                <col data-col-index="1">
-                                <col data-col-index="2">
-                                <col data-col-index="3">
-                                <col data-col-index="4">
-                                <col data-col-index="5">
-                                <col data-col-index="6">
-                                <col data-col-index="7">
-                            </colgroup>
-                            <thead>
-                                <tr>
-                                    <th><div class="header-cell"><a class="sort-link {{ 'is-active' if sort_by == 'table' else '' }}" href="{{ sort_urls['table'] }}">Table{% if sort_by == 'table' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}</a><span class="column-resizer" data-col-index="0" aria-hidden="true"></span></div></th>
-                                    <th><div class="header-cell"><a class="sort-link {{ 'is-active' if sort_by == 'layer' else '' }}" href="{{ sort_urls['layer'] }}">Layer{% if sort_by == 'layer' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}</a><span class="column-resizer" data-col-index="1" aria-hidden="true"></span></div></th>
-                                    <th><div class="header-cell"><a class="sort-link {{ 'is-active' if sort_by == 'rows' else '' }}" href="{{ sort_urls['rows'] }}">Rows{% if sort_by == 'rows' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}</a><span class="column-resizer" data-col-index="2" aria-hidden="true"></span></div></th>
-                                    <th><div class="header-cell"><a class="sort-link {{ 'is-active' if sort_by == 'column_count' else '' }}" href="{{ sort_urls['column_count'] }}">Cols{% if sort_by == 'column_count' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}</a><span class="column-resizer" data-col-index="3" aria-hidden="true"></span></div></th>
-                                    <th><div class="header-cell"><a class="sort-link {{ 'is-active' if sort_by == 'pk_fk' else '' }}" href="{{ sort_urls['pk_fk'] }}">PK / FK{% if sort_by == 'pk_fk' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}</a><span class="column-resizer" data-col-index="4" aria-hidden="true"></span></div></th>
-                                    <th><div class="header-cell"><a class="sort-link {{ 'is-active' if sort_by == 'quality_score' else '' }}" href="{{ sort_urls['quality_score'] }}">Quality Score{% if sort_by == 'quality_score' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}</a><span class="column-resizer" data-col-index="5" aria-hidden="true"></span></div></th>
-                                    <th><div class="header-cell"><a class="sort-link {{ 'is-active' if sort_by == 'issue_columns' else '' }}" href="{{ sort_urls['issue_columns'] }}">Issue Columns{% if sort_by == 'issue_columns' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}</a><span class="column-resizer" data-col-index="6" aria-hidden="true"></span></div></th>
-                                    <th><div class="header-cell"><a class="sort-link {{ 'is-active' if sort_by == 'issues' else '' }}" href="{{ sort_urls['issues'] }}">Issues{% if sort_by == 'issues' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}</a><span class="column-resizer" data-col-index="7" aria-hidden="true"></span></div></th>
-                                </tr>
-                            </thead>
-                            <tbody id="tableBody">{{ initial_rows_html|safe }}</tbody>
-                        </table>
-                    </div>
-                </section>
-                {% elif active_view == 'refresh' %}
-                <section class="panel">
-                    <div class="page-header">
-                        <div>
-                            <p class="page-kicker">Data Refresh Status</p>
-                            <h1>Data Refresh Status</h1>
-                            <p>Latest execution per unique procedure, including execution date and status.</p>
-                        </div>
-                    </div>
-
-                    <div class="status" id="refreshStatusBox">{{ refresh_summary_status }}</div>
-                    <div class="meta" id="refreshMetaBox">{{ refresh_summary_meta }}</div>
-
-                    <div class="top-pager">
-                        <span class="pager-info">{{ refresh_table_pager_info }}</span>
-                        <div class="pager-actions">
-                            <a class="secondary button-link {{ 'is-disabled' if refresh_prev_disabled else '' }}" href="{{ refresh_prev_page_url }}">&#8592; Previous</a>
-                            <a class="secondary button-link {{ 'is-disabled' if refresh_next_disabled else '' }}" href="{{ refresh_next_page_url }}">Next &#8594;</a>
-                        </div>
-                    </div>
-
-                    <div class="table-wrap">
-                        <table class="refresh-table">
-                            <thead>
-                                <tr>{{ refresh_table_headers_html|safe }}</tr>
-                            </thead>
-                            <tbody id="refreshTableBody">{{ refresh_table_rows_html|safe }}</tbody>
-                        </table>
-                    </div>
-
-                    <div class="table-footer">
-                        <div class="pager-info">{{ refresh_table_pager_info }}</div>
-                        <div class="pager-actions">
-                            <a class="secondary button-link {{ 'is-disabled' if refresh_prev_disabled else '' }}" id="refreshPrevPageBtn" href="{{ refresh_prev_page_url }}">Previous</a>
-                            <a class="secondary button-link {{ 'is-disabled' if refresh_next_disabled else '' }}" id="refreshNextPageBtn" href="{{ refresh_next_page_url }}">Next</a>
-                        </div>
-                    </div>
-                </section>
-                {% elif active_view == 'sp' %}
-                <section class="panel">
-                    <div class="page-header">
-                        <div>
-                            <p class="page-kicker">SP Analysis</p>
-                            <h1>Stored Procedure Analysis</h1>
-                            <p>Rule-based quality scores for all stored procedures. Click <strong>Analyze with AI</strong> to enrich with LLM recommendations.</p>
-                        </div>
-                    </div>
-
-                    <div class="toolbar">
-                        <button type="button" class="primary button-link" id="spLlmBtn" onclick="runSpLlmAnalysis()">Analyze with AI</button>
-                        <button type="button" class="secondary button-link" onclick="window.location.href='{{ sp_refresh_url }}'" >Refresh</button>
-                        <button type="button" class="secondary button-link" onclick="exportSpCSV()">Export CSV</button>
-                    </div>
-
-                    <div class="status" id="spStatusBox">{{ sp_status }}</div>
-                    <div class="meta" id="spMetaBox">{{ sp_meta }}</div>
-
-                    <div class="top-pager">
-                        <span class="pager-info" id="spPagerInfoTop">{{ sp_pager_info }}</span>
-                        <div class="pager-actions">
-                            <a class="button-link secondary {{ sp_prev_disabled }}" href="{{ sp_prev_page_url }}">&#8592; Previous</a>
-                            <a class="button-link secondary {{ sp_next_disabled }}" href="{{ sp_next_page_url }}">Next &#8594;</a>
-                        </div>
-                    </div>
-
-                    <div class="table-wrap" id="spTableWrap">
-                        <table class="data-table" id="spTable">
-                            <thead>
-                                <tr>
-                                    <th><a href="{{ sp_sort_urls['sp_name'] }}">SP Name{% if sp_sort_by == 'sp_name' %} {{ '▲' if sp_sort_dir == 'asc' else '▼' }}{% endif %}</a></th>
-                                    <th><a href="{{ sp_sort_urls['schema_name'] }}">Schema{% if sp_sort_by == 'schema_name' %} {{ '▲' if sp_sort_dir == 'asc' else '▼' }}{% endif %}</a></th>
-                                    <th><a href="{{ sp_sort_urls['last_modified'] }}">Last Modified{% if sp_sort_by == 'last_modified' %} {{ '▲' if sp_sort_dir == 'asc' else '▼' }}{% endif %}</a></th>
-                                    <th style="text-align:center"><a href="{{ sp_sort_urls['parameter_count'] }}">Params{% if sp_sort_by == 'parameter_count' %} {{ '▲' if sp_sort_dir == 'asc' else '▼' }}{% endif %}</a></th>
-                                    <th><a href="{{ sp_sort_urls['quality_score'] }}">Quality Score{% if sp_sort_by == 'quality_score' %} {{ '▲' if sp_sort_dir == 'asc' else '▼' }}{% endif %}</a></th>
-                                    <th>Code Quality Issues</th>
-                                    <th>AI Recommendations</th>
-                                    <th style="text-align:center">Analyze</th>
-                                </tr>
-                            </thead>
-                            <tbody id="spTableBody">
-                                {{ sp_rows_html|safe }}
-                            </tbody>
-                        </table>
-                    </div>
-
-                    <div class="table-footer">
-                        <div class="pager-info" id="spPagerInfo">{{ sp_pager_info }}</div>
-                        <div class="pager-actions">
-                            <a class="button-link secondary {{ sp_prev_disabled }}" id="spPrevPageBtn" href="{{ sp_prev_page_url }}">&#8592; Previous</a>
-                            <a class="button-link secondary {{ sp_next_disabled }}" id="spNextPageBtn" href="{{ sp_next_page_url }}">Next &#8594;</a>
-                        </div>
-                    </div>
-                </section>
-
-                <!-- SP Analyze Modal -->
-                <div class="sp-modal-overlay" id="spModalOverlay" onclick="if(event.target===this)closeSpModal()">
-                    <div class="sp-modal">
-                        <div class="sp-modal-header">
-                            <h2 id="spModalTitle">SP Analysis</h2>
-                            <button class="sp-modal-close" onclick="closeSpModal()" title="Close">&times;</button>
-                        </div>
-                        <div class="sp-modal-body" id="spModalBody">
-                            <p style="color:var(--muted)">Loading…</p>
-                        </div>
-                        <div class="sp-modal-footer">
-                            <span id="spModalStatus" style="font-size:12px;color:var(--muted)"></span>
-                            <button class="secondary button-link" onclick="closeSpModal()">Close</button>
-                        </div>
-                    </div>
-                </div>
-                <script>
-                (function() {
-                    function esc(s) {
-                        return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-                    }
-                    window.showSpDetail = function(spName) {
-                        var overlay = document.getElementById('spModalOverlay');
-                        var body = document.getElementById('spModalBody');
-                        var title = document.getElementById('spModalTitle');
-                        var status = document.getElementById('spModalStatus');
-                        title.textContent = spName;
-                        status.textContent = '';
-                        body.innerHTML = '<p style="color:var(--muted)">Loading definition &amp; AI analysis…</p>';
-                        overlay.classList.add('open');
-                        fetch('/api/sp-analyze-single', {
-                            method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify({sp_name: spName})
-                        })
-                        .then(function(r) { return r.json(); })
-                        .then(function(data) {
-                            if (!data.success) {
-                                body.innerHTML = '<p style="color:var(--danger,#ef4444)">Error: ' + esc(data.error || 'unknown') + '</p>';
-                                return;
-                            }
-                            var llm = data.llm_analysis || {};
-                            var recs = llm.recommendations || [];
-                            var issues = llm.issues || [];
-                            var summary = llm.summary || '';
-                            var score = llm.score != null ? llm.score : '—';
-                            var recsHtml = recs.length ? '<ul class="sp-llm-list">' + recs.map(function(r){return '<li>' + esc(typeof r==='string'?r:JSON.stringify(r)) + '</li>';}).join('') + '</ul>' : '<p style="color:var(--muted)">None</p>';
-                            var issuesHtml = issues.length ? '<ul class="sp-llm-list">' + issues.map(function(i){return '<li>' + esc(typeof i==='string'?i:JSON.stringify(i)) + '</li>';}).join('') + '</ul>' : '<p style="color:#22c55e">✓ No issues found</p>';
-                            var defHtml = data.definition ? '<div class="sp-definition-box">' + esc(data.definition) + '</div>' : '<p style="color:var(--muted)">Definition unavailable</p>';
-                            body.innerHTML =
-                                '<div>' +
-                                    '<div class="sp-modal-section-title">AI Score</div>' +
-                                    '<span class="score-pill ' + (score>=80?'score-high':score>=50?'score-med':'score-low') + '">' + score + '%</span>' +
-                                    (summary ? '<p style="font-size:13px;margin-top:8px">' + esc(summary) + '</p>' : '') +
-                                '</div>' +
-                                '<div><div class="sp-modal-section-title">AI Recommendations</div>' + recsHtml + '</div>' +
-                                '<div><div class="sp-modal-section-title">Issues Detected</div>' + issuesHtml + '</div>' +
-                                '<div><div class="sp-modal-section-title">SP Definition</div>' + defHtml + '</div>';
-                            status.textContent = data.cached ? 'Cached result' : 'Fresh analysis';
-                        })
-                        .catch(function(err) {
-                            body.innerHTML = '<p style="color:var(--danger,#ef4444)">Request failed: ' + esc(String(err)) + '</p>';
-                        });
-                    };
-                    window.closeSpModal = function() {
-                        document.getElementById('spModalOverlay').classList.remove('open');
-                    };
-                    document.addEventListener('keydown', function(e) {
-                        if (e.key === 'Escape') window.closeSpModal();
-                    });
-                })();
-                </script>
-                {% elif active_view == 'intel' %}
-                <section class="panel">
-                    <div class="page-header">
-                        <div>
-                            <p class="page-kicker">Table Intelligence</p>
-                            <h1>Table Intelligence</h1>
-                            <p>Schema metadata, sample data, grain definitions, and on-demand AI business summaries for every table.</p>
-                        </div>
-                    </div>
-                    <div class="toolbar" style="flex-wrap:wrap;gap:8px">
-                        <input type="text" id="intelSearch" class="intel-search" placeholder="Filter tables…" oninput="filterIntelCards(this.value)">
-                        <span style="font-size:12px;color:var(--muted);margin-left:4px" id="intelCount">{{ intel_total }} tables</span>
-                        <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
-                            <button id="intelPrevBtn" class="button-link secondary" onclick="intelPrevPage()" disabled>&#8592; Prev</button>
-                            <span class="pager-info" id="intelPagerInfo" style="min-width:140px;text-align:center">Page 1</span>
-                            <button id="intelNextBtn" class="button-link secondary" onclick="intelNextPage()">Next &#8594;</button>
-                            <button type="button" class="secondary button-link" onclick="window.location.href='{{ intel_refresh_url }}'">Refresh</button>
-                        </div>
-                    </div>
-                    <div class="intel-filter-row">
-                        <button class="intel-filter-btn active" onclick="filterIntelType(this,'all')">All</button>
-                        <button class="intel-filter-btn" onclick="filterIntelType(this,'fact')">Fact</button>
-                        <button class="intel-filter-btn" onclick="filterIntelType(this,'dimension')">Dimension</button>
-                    </div>
-                    <div class="intel-grid" id="intelGrid">
-                        {{ intel_cards_html|safe }}
-                    </div>
-                </section>
-                <script>
-                (function() {
-                    var _typeFilter = 'all';
-                    var _page = 1;
-                    var _pageSize = 12;
-
-                    function applyFilter() {
-                        var q = ((document.getElementById('intelSearch') || {}).value || '').toLowerCase().trim();
-                        var cards = document.querySelectorAll('#intelGrid .intel-card');
-                        cards.forEach(function(card) {
-                            var name = (card.getAttribute('data-table') || '').toLowerCase();
-                            var type = (card.getAttribute('data-type') || '').toLowerCase();
-                            var tm = (_typeFilter === 'all') || (type === _typeFilter);
-                            var qm = !q || name.indexOf(q) !== -1;
-                            card.setAttribute('data-m', (tm && qm) ? '1' : '0');
-                        });
-                        _page = 1;
-                        renderPage();
-                    }
-
-                    function renderPage() {
-                        var all = Array.prototype.slice.call(document.querySelectorAll('#intelGrid .intel-card'));
-                        var matched = all.filter(function(c) { return c.getAttribute('data-m') === '1'; });
-                        var total = matched.length;
-                        var totalPages = Math.max(1, Math.ceil(total / _pageSize));
-                        _page = Math.min(Math.max(_page, 1), totalPages);
-                        var start = (_page - 1) * _pageSize;
-                        var end = start + _pageSize;
-                        all.forEach(function(c) { c.style.display = 'none'; });
-                        matched.slice(start, end).forEach(function(c) { c.style.display = ''; });
-                        var cnt = document.getElementById('intelCount');
-                        if (cnt) cnt.textContent = total + ' tables';
-                        var info = document.getElementById('intelPagerInfo');
-                        if (info) info.textContent = 'Page ' + _page + ' of ' + totalPages + ' \u00b7 ' + total + ' tables';
-                        var prev = document.getElementById('intelPrevBtn');
-                        var next = document.getElementById('intelNextBtn');
-                        if (prev) prev.disabled = (_page <= 1);
-                        if (next) next.disabled = (_page >= totalPages);
-                    }
-
-                    window.filterIntelCards = function() { applyFilter(); };
-                    window.filterIntelType = function(btn, type) {
-                        document.querySelectorAll('.intel-filter-btn').forEach(function(b) { b.classList.remove('active'); });
-                        btn.classList.add('active');
-                        _typeFilter = type;
-                        applyFilter();
-                    };
-                    window.intelPrevPage = function() {
-                        if (_page > 1) { _page--; renderPage(); }
-                    };
-                    window.intelNextPage = function() {
-                        var all = Array.prototype.slice.call(document.querySelectorAll('#intelGrid .intel-card'));
-                        var matched = all.filter(function(c) { return c.getAttribute('data-m') === '1'; });
-                        var tp = Math.max(1, Math.ceil(matched.length / _pageSize));
-                        if (_page < tp) { _page++; renderPage(); }
-                    };
-
-                    applyFilter();
-                })();
-                </script>
-                {% endif %}
-            </div>
-        </div>
-    </div>
-
-    <script>
-        const spRecordsJson = {{ sp_records_json|safe }};
-
-        function runSpLlmAnalysis() {
-            const btn = document.getElementById('spLlmBtn');
-            const statusBox = document.getElementById('spStatusBox');
-            if (btn) { btn.textContent = 'Analyzing…'; btn.disabled = true; }
-            if (statusBox) statusBox.textContent = 'Running AI analysis — this may take a minute…';
-            fetch('/api/sp-llm-analyze', { method: 'POST' })
-                .then(r => r.json())
-                .then(data => {
-                    if (statusBox) statusBox.textContent = data.success ? `AI analysis complete — ${data.analyzed} SPs analyzed. Refreshing page…` : `Error: ${data.error}`;
-                    if (data.success) setTimeout(() => window.location.reload(), 1200);
-                })
-                .catch(err => { if (statusBox) statusBox.textContent = 'AI analysis request failed: ' + err; })
-                .finally(() => { if (btn) { btn.textContent = 'Analyze with AI'; btn.disabled = false; } });
-        }
-
-        function exportSpCSV() {
-            if (!spRecordsJson.length) return;
-            const header = ['SP Name','Schema','Last Modified','Params','Quality Score','Code Quality Issues'];
-            const rows = spRecordsJson.map(r => [
-                '"' + (r.sp_name || '').replace(/"/g, '""') + '"',
-                '"' + (r.schema_name || '').replace(/"/g, '""') + '"',
-                '"' + (r.last_modified || '').replace(/"/g, '""') + '"',
-                r.parameter_count || 0,
-                r.quality_score !== null ? r.quality_score : '',
-                '"' + (r.issues || []).join('; ').replace(/"/g, '""') + '"'
-            ].join(','));
-            const csv = [header.join(','), ...rows].join('\n');
-            const a = document.createElement('a');
-            a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
-            a.download = 'sp_analysis.csv';
-            a.style.display = 'none';
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-        }
-
-        /* intel filter/pagination handled in inline script inside the intel section */
-
-        const initialMetrics = {{ initial_metrics_json|safe }};
-        const initialCurrentPage = {{ initial_current_page }};
-        const pageSize = {{ table_page_size }};
-        const activeView = {{ active_view|tojson }};
-        const tableState = {
-            metrics: Array.isArray(initialMetrics) ? initialMetrics : [],
-            currentPage: initialCurrentPage,
-            pageSize: pageSize,
-        };
-
-        function sortMetrics(metrics) {
-            return [...metrics].sort((left, right) => {
-                const leftScore = Number.isFinite(Number(left.quality_score)) ? Number(left.quality_score) : Number.POSITIVE_INFINITY;
-                const rightScore = Number.isFinite(Number(right.quality_score)) ? Number(right.quality_score) : Number.POSITIVE_INFINITY;
-                if (leftScore !== rightScore) {
-                    return leftScore - rightScore;
-                }
-                const leftTable = String(left.table || '').toLowerCase();
-                const rightTable = String(right.table || '').toLowerCase();
-                return leftTable.localeCompare(rightTable);
-            });
-        }
-
-        function getSavedColumnWidths() {
-            try {
-                const saved = localStorage.getItem('dwh-quality-column-widths-v1');
-                return saved ? JSON.parse(saved) : null;
-            } catch (error) {
-                return null;
-            }
-        }
-
-        function saveColumnWidths(widths) {
-            try {
-                localStorage.setItem('dwh-quality-column-widths-v1', JSON.stringify(widths));
-            } catch (error) {
-                // Ignore storage issues.
-            }
-        }
-
-        function applyColumnWidths(widths) {
-            const cols = document.querySelectorAll('.quality-table col[data-col-index]');
-            cols.forEach((col, index) => {
-                if (Array.isArray(widths) && Number.isFinite(Number(widths[index]))) {
-                    col.style.width = `${Number(widths[index])}px`;
-                }
-            });
-        }
-
-        function captureColumnWidths() {
-            const cols = document.querySelectorAll('.quality-table col[data-col-index]');
-            return Array.from(cols).map((col) => Math.max(80, Math.round(col.getBoundingClientRect().width)));
-        }
-
-        function initResizableColumns() {
-            const cols = Array.from(document.querySelectorAll('.quality-table col[data-col-index]'));
-            const handles = Array.from(document.querySelectorAll('.column-resizer'));
-            if (!cols.length || !handles.length) {
-                return;
-            }
-
-            const savedWidths = getSavedColumnWidths();
-            if (Array.isArray(savedWidths) && savedWidths.length === cols.length) {
-                applyColumnWidths(savedWidths);
-            }
-
-            let activeResize = null;
-
-            handles.forEach((handle) => {
-                handle.addEventListener('mousedown', (event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    const index = Number(handle.dataset.colIndex);
-                    const col = cols[index];
-                    if (!col) {
-                        return;
-                    }
-                    const width = parseFloat(getComputedStyle(col).width) || col.getBoundingClientRect().width;
-                    activeResize = {
-                        index,
-                        startX: event.clientX,
-                        startWidth: width,
-                    };
-                    document.body.classList.add('is-resizing-columns');
-                });
-            });
-
-            window.addEventListener('mousemove', (event) => {
-                if (!activeResize) {
-                    return;
-                }
-                const col = cols[activeResize.index];
-                if (!col) {
-                    return;
-                }
-                const nextWidth = Math.max(80, Math.round(activeResize.startWidth + (event.clientX - activeResize.startX)));
-                col.style.width = `${nextWidth}px`;
-                saveColumnWidths(captureColumnWidths());
-            });
-
-            window.addEventListener('mouseup', () => {
-                if (activeResize) {
-                    saveColumnWidths(captureColumnWidths());
-                    activeResize = null;
-                    document.body.classList.remove('is-resizing-columns');
-                }
-            });
-        }
-
-        function formatMetricValues(value) {
-            if (Array.isArray(value)) {
-                const entries = value.map((entry) => {
-                    if (entry && typeof entry === 'object') {
-                        return entry.column || entry.name || entry.value || JSON.stringify(entry);
-                    }
-                    return entry;
-                }).filter(Boolean);
-                return entries.length ? entries.join(', ') : '-';
-            }
-            if (value === null || value === undefined) {
-                return '-';
-            }
-            const text = String(value).trim();
-            return text || '-';
-        }
-
-        function formatColumnIssueSummary(columnIssues) {
-            if (!columnIssues || typeof columnIssues !== 'object') {
-                return 'None';
-            }
-
-            const entries = Object.entries(columnIssues).map(([columnName, problems]) => {
-                let problemText = 'Issue detected';
-                if (Array.isArray(problems)) {
-                    const cleaned = problems.map((problem) => String(problem).trim()).filter(Boolean);
-                    if (cleaned.length) {
-                        problemText = cleaned.join('; ');
-                    }
-                } else if (problems !== null && problems !== undefined) {
-                    const text = String(problems).trim();
-                    if (text) {
-                        problemText = text;
-                    }
-                }
-                return `${columnName} (${problemText})`;
-            });
-
-            return entries.length ? entries.join('; ') : 'None';
-        }
-
-        function formatIssueSummary(item) {
-            const issues = Array.isArray(item.issues)
-                ? item.issues.map((issue) => String(issue).trim()).filter(Boolean)
-                : [];
-            if (issues.length) {
-                return issues.join('; ');
-            }
-
-            const columnIssues = item.column_issues && typeof item.column_issues === 'object' ? item.column_issues : null;
-            if (columnIssues && Object.keys(columnIssues).length) {
-                return formatColumnIssueSummary(columnIssues);
-            }
-
-            return 'Healthy';
-        }
-
-        function csvEscape(value) {
-            const text = value === null || value === undefined ? '' : String(value);
-            return '"' + text.replace(/"/g, '""') + '"';
-        }
-
-        function exportTableCSV() {
-            if (!tableState.metrics.length) {
-                document.getElementById('statusBox').textContent = 'No Gold tables available to export.';
-                return;
-            }
-
-            const header = ['Table', 'Layer', 'Rows', 'Cols', 'PK', 'FK', 'Quality Score', 'Issue Columns', 'Issues'];
-            const rows = [header];
-
-            tableState.metrics.forEach((item) => {
-                const issueColumns = formatColumnIssueSummary(item.column_issues);
-                const issues = formatIssueSummary(item);
-                rows.push([
-                    item.table || '',
-                    item.layer || 'gold',
-                    item.rows ?? '',
-                    item.column_count ?? '',
-                    formatMetricValues(item.pk_columns),
-                    formatMetricValues(item.fk_columns),
-                    item.quality_score ?? '',
-                    issueColumns,
-                    issues,
-                ]);
-            });
-
-            const csv = '\ufeff' + rows.map((row) => row.map(csvEscape).join(',')).join('\n');
-            const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-            const url = URL.createObjectURL(blob);
-            const link = document.createElement('a');
-            link.href = url;
-            link.download = 'dwh_gold_quality_table.csv';
-            link.style.display = 'none';
-            document.body.appendChild(link);
-            link.click();
-            setTimeout(() => {
-                link.remove();
-                URL.revokeObjectURL(url);
-            }, 1000);
-        }
-
-        function renderRows() {
-            const body = document.getElementById('tableBody');
-            const pagerInfo = document.getElementById('pagerInfo');
-            const prevBtn = document.getElementById('prevPageBtn');
-            const nextBtn = document.getElementById('nextPageBtn');
-            if (!body || !pagerInfo || !prevBtn || !nextBtn) {
-                return;
-            }
-            const total = tableState.metrics.length;
-            const totalPages = total ? Math.ceil(total / tableState.pageSize) : 1;
-            const currentPage = Math.min(Math.max(tableState.currentPage, 1), totalPages);
-            tableState.currentPage = currentPage;
-
-            const start = (currentPage - 1) * tableState.pageSize;
-            const visibleMetrics = tableState.metrics.slice(start, start + tableState.pageSize);
-
-            if (!visibleMetrics.length) {
-                body.innerHTML = '<tr><td colspan="8" style="color: var(--muted);">No Gold tables found in the latest run.</td></tr>';
-                pagerInfo.textContent = 'Page 0 of 0';
-                prevBtn.disabled = true;
-                nextBtn.disabled = true;
-                return;
-            }
-
-            body.innerHTML = visibleMetrics.map((item) => {
-                const issueColumns = formatColumnIssueSummary(item.column_issues);
-                const issues = formatIssueSummary(item);
-                const pk = formatMetricValues(item.pk_columns);
-                const fk = formatMetricValues(item.fk_columns);
-                return `
-                    <tr>
-                        <td>${item.table || '—'}</td>
-                        <td><span class="layer-tag">${item.layer || '—'}</span></td>
-                        <td>${item.rows ?? '—'}</td>
-                        <td>${item.column_count ?? '—'}</td>
-                        <td><div class="pkfk-block"><div><span class="kv-label">PK</span> ${pk}</div><div><span class="kv-label">FK</span> ${fk}</div></div></td>
-                        <td>${item.quality_score ?? '—'}%</td>
-                        <td>${issueColumns}</td>
-                        <td>${issues}</td>
-                    </tr>
-                `;
-            }).join('');
-
-            pagerInfo.textContent = `Page ${currentPage} of ${totalPages} — showing ${start + 1}-${Math.min(start + tableState.pageSize, total)} of ${total}`;
-            prevBtn.disabled = currentPage <= 1;
-            nextBtn.disabled = currentPage >= totalPages;
-        }
-
-        function setMetrics(metrics) {
-            tableState.metrics = sortMetrics(Array.isArray(metrics) ? metrics : []);
-            tableState.currentPage = 1;
-            renderRows();
-        }
-
-        function changePage(delta) {
-            tableState.currentPage += delta;
-            renderRows();
-        }
-
-        function extractGoldMetrics(report) {
-            if (!report) return [];
-
-            if (report.report && typeof report.report === 'object') {
-                const nestedMetrics = extractGoldMetrics(report.report);
-                if (nestedMetrics.length) {
-                    return nestedMetrics;
-                }
-            }
-
-            const directMetrics = Array.isArray(report.metrics) ? report.metrics : [];
-            if (directMetrics.length) {
-                const reportLayer = String(report.layer || report.check_type || '').toLowerCase();
-                if (reportLayer === 'gold' || reportLayer === 'comprehensive' || !reportLayer) {
-                    return directMetrics;
-                }
-                return directMetrics.filter((item) => String(item.layer || '').toLowerCase() === 'gold');
-            }
-
-            const goldLayerReport = report.layer_reports && report.layer_reports.gold;
-            if (goldLayerReport && Array.isArray(goldLayerReport.metrics)) {
-                return goldLayerReport.metrics;
-            }
-
-            return [];
-        }
-
-        function findLatestGoldReport(history) {
-            for (const item of history) {
-                const report = item && item.report;
-                if (extractGoldMetrics(report).length) {
-                    return { report, checkedAt: item.checked_at };
-                }
-            }
-            return { report: null, checkedAt: null };
-        }
-
-        async function loadGoldTable(forceRun) {
-            const statusBox = document.getElementById('statusBox');
-            const metaBox = document.getElementById('metaBox');
-
-            try {
-                statusBox.textContent = forceRun ? 'Running Gold quality check...' : 'Refreshing Gold DB status...';
-
-                let report = null;
-                let checkedAt = null;
-
-                if (forceRun) {
-                    const response = await fetch('/api/run-now', { method: 'POST' });
-                    const data = await response.json();
-                    if (!data.success) {
-                        throw new Error(data.error || 'Could not load the Gold table');
-                    }
-                    report = data.run?.report || null;
-                    checkedAt = data.run?.checked_at || null;
-                } else {
-                    const response = await fetch('/api/dashboard-state');
-                    const data = await response.json();
-                    const latestGold = findLatestGoldReport(data.history || []);
-                    report = latestGold.report;
-                    checkedAt = latestGold.checkedAt;
-                }
-
-                const goldMetrics = extractGoldMetrics(report);
-
-                setMetrics(goldMetrics);
-                statusBox.textContent = goldMetrics.length
-                    ? `Loaded ${goldMetrics.length} Gold table${goldMetrics.length === 1 ? '' : 's'}.`
-                    : 'No Gold tables found in the latest run.';
-                metaBox.textContent = checkedAt ? `Last checked at: ${checkedAt}` : 'No previous Gold run found.';
-            } catch (error) {
-                statusBox.textContent = `Unable to load Gold table: ${error.message}`;
-                metaBox.textContent = 'Please try again.';
-                setMetrics([]);
-            }
-        }
-
-        function getSidebarCollapsedState() {
-            try { return localStorage.getItem('dwh-sidebar-collapsed-v1') === '1'; } catch(e) { return false; }
-        }
-        function setSidebarCollapsedState(collapsed) {
-            try { localStorage.setItem('dwh-sidebar-collapsed-v1', collapsed ? '1' : '0'); } catch(e) {}
-        }
-        function applySidebarState(collapsed) {
-            const sidebar = document.querySelector('.sidebar');
-            const toggleIcon = document.getElementById('sidebarToggleIcon');
-            if (!sidebar) return;
-            if (collapsed) {
-                sidebar.classList.add('is-collapsed');
-                sidebar.style.width = '72px';
-                sidebar.style.paddingLeft = '10px';
-                sidebar.style.paddingRight = '10px';
-                sidebar.style.overflow = 'hidden';
-            } else {
-                sidebar.classList.remove('is-collapsed');
-                sidebar.style.width = '';
-                sidebar.style.paddingLeft = '';
-                sidebar.style.paddingRight = '';
-                sidebar.style.overflow = '';
-            }
-            if (toggleIcon) toggleIcon.textContent = collapsed ? '\u2630' : '\u276e';
-        }
-        function initSidebarToggle() {
-            const btn = document.getElementById('sidebarToggleBtn');
-            if (!btn) return;
-            applySidebarState(getSidebarCollapsedState());
-            btn.addEventListener('click', function() {
-                const sidebar = document.querySelector('.sidebar');
-                const collapsed = sidebar && !sidebar.classList.contains('is-collapsed');
-                setSidebarCollapsedState(collapsed);
-                applySidebarState(collapsed);
-            });
-        }
-
-        document.addEventListener('DOMContentLoaded', () => {
-            initSidebarToggle();
-            if (activeView === 'quality') {
-                initResizableColumns();
-                renderRows();
-            }
-        });
-    </script>
-</body>
-</html>
-"""
-
-@app.route('/sp-analysis')
-def sp_analysis_redirect():
-    theme = _normalize_theme(request.args.get('theme'))
-    return redirect(url_for('home', view='sp', theme=theme))
-
-
-@app.route('/sp-refresh')
-def sp_refresh():
-    """Clear the SP cache and reload the SP Analysis tab."""
-    global _sp_analysis_cache
-    with _sp_cache_lock:
-        _sp_analysis_cache = None
-    theme = _normalize_theme(request.args.get('theme'))
-    return redirect(url_for('home', view='sp', theme=theme))
-
-
-@app.route('/intel-refresh')
-def intel_refresh():
-    """Clear the Table Intelligence cache and reload the tab."""
-    global _intel_cache
-    with _intel_cache_lock:
-        _intel_cache = None
-    theme = _normalize_theme(request.args.get('theme'))
-    return redirect(url_for('home', view='intel', theme=theme))
-
-
-@app.route('/api/table-llm-summary', methods=['POST'])
-def table_llm_summary():
-    """Generate a business summary for one table using the LLM."""
-    data = request.get_json(force=True, silent=True) or {}
-    full_name = str(data.get('table', '')).strip()
-    if not full_name:
-        return jsonify({'success': False, 'error': 'table param required'}), 400
-
-    with _intel_cache_lock:
-        cache = _intel_cache
-    if not cache:
-        return jsonify({'success': False, 'error': 'Table intel not loaded yet'}), 400
-
-    rec = next((r for r in cache.get('records', []) if r['full_name'].lower() == full_name.lower()), None)
-    if rec is None:
-        return jsonify({'success': False, 'error': f'Table {full_name} not found in metadata'}), 404
-
-    cols_text = ', '.join(f"{c['name']} ({c['type']})" for c in (rec.get('columns') or [])[:20])
-    sample_text = ''
-    samples = rec.get('sample_rows') or []
-    if samples:
-        sample_text = '\n'.join(str(s) for s in samples[:2])
-
-    prompt = (
-        f"You are a data warehouse expert. Provide a concise 2-3 sentence business summary "
-        f"for the table {rec['full_name']}. "
-        f"Table type: {rec.get('table_type','Unknown')}. "
-        f"Grain: {rec.get('grain','unknown')}. "
-        f"Columns: {cols_text}. "
-        f"Sample data (first 2 rows):\n{sample_text}\n"
-        f"Explain: what business process this table tracks, what the key measures/attributes are, "
-        f"and who would use this data."
-    )
-    try:
-        llm = LLMManager()
-        response = asyncio.run(llm.generate([{'role': 'user', 'content': prompt}]))
-        summary = (response or '').strip()
-        if not summary:
-            return jsonify({'success': False, 'error': 'LLM returned empty response'}), 502
-        with _intel_cache_lock:
-            if _intel_cache:
-                for r in _intel_cache['records']:
-                    if r['full_name'].lower() == full_name.lower():
-                        r['llm_summary'] = summary
-                        break
-        return jsonify({'success': True, 'summary': summary})
-    except Exception as exc:
-        return jsonify({'success': False, 'error': str(exc)}), 500
-
-
-@app.route('/api/sp-llm-analyze', methods=['POST'])
-def sp_llm_analyze():
-    """Run LLM analysis on all SPs and update the in-memory cache."""
-    global _sp_analysis_cache
-    with _sp_cache_lock:
-        cache = _sp_analysis_cache
-    if not cache:
-        return jsonify({'success': False, 'error': 'No SP data loaded yet. Open the SP Analysis tab first.'}), 400
-
-    system_prompt = (
-        'You are an expert SQL Server DBA reviewing stored procedure code for best practices and optimisation. '
-        'For each procedure return a JSON object with keys: '
-        '"score" (int 0-100), "issues" (list of strings), "recommendations" (list of strings). '
-        'Be concise. Return ONLY valid JSON, no markdown.'
-    )
-
-    updated = []
-    for rec in cache['records']:
-        sp_name = rec.get('sp_name', '')
-        with _sp_cache_lock:
-            if sp_name in _sp_llm_cache:
-                rec['llm_analysis'] = _sp_llm_cache[sp_name]
-                updated.append({'sp_name': sp_name, 'cached': True})
-                continue
-
-        definition = rec.get('definition', '')
-        code_snippet = definition[:4000] if definition else '(definition unavailable)'
-        prompt = (
-            f'Analyze this SQL Server stored procedure and return ONLY a JSON object.\n'
-            f'SP name: {sp_name}\n'
-            f'Rule-based score: {rec["quality_score"]}/100\n'
-            f'Rule-based issues: {", ".join(rec["issues"]) or "none"}\n\n'
-            f'Code:\n{code_snippet}\n\n'
-            f'Return exactly this JSON structure (no markdown, no extra text):\n'
-            f'{{"score": <int 0-100>, "recommendations": ["<string>", ...], "issues": ["<string>", ...]}}'
-        )
-        try:
-            result = asyncio.run(llm_manager.generate(prompt, system_prompt=system_prompt))
-            if not result.get('success'):
-                logger.warning(f'LLM SP analysis error for {sp_name}: {result.get("error")}')
-                continue
-            text = result.get('response', '')
-            logger.info(f'LLM SP raw response for {sp_name} ({len(text)} chars): {text[:200]}')
-            json_match = re.search(r'\{.*\}', text, re.S)
-            if not json_match:
-                logger.warning(f'No JSON found in LLM response for {sp_name}: {text[:300]}')
-                continue
-            try:
-                analysis = json.loads(json_match.group())
-            except json.JSONDecodeError as je:
-                logger.warning(f'JSON parse failed for {sp_name}: {je} | raw: {json_match.group()[:200]}')
-                continue
-            with _sp_cache_lock:
-                _sp_llm_cache[sp_name] = analysis
-                rec['llm_analysis'] = analysis
-            updated.append({'sp_name': sp_name, 'cached': False})
-        except Exception as exc:
-            logger.warning(f'LLM SP analysis failed for {sp_name}: {exc}')
-
-    return jsonify({'success': True, 'analyzed': len(updated)})
-
-
-@app.route('/api/sp-analyze-single', methods=['POST'])
-def sp_analyze_single():
-    """Return definition + LLM analysis for a single SP."""
-    global _sp_analysis_cache
-    data = request.get_json(force=True, silent=True) or {}
-    sp_name = (data.get('sp_name') or '').strip()
-    if not sp_name:
-        return jsonify({'success': False, 'error': 'sp_name required'}), 400
-    with _sp_cache_lock:
-        cache = _sp_analysis_cache
-    if not cache:
-        return jsonify({'success': False, 'error': 'SP data not loaded — open the SP Analysis tab first.'}), 400
-    rec = next((r for r in cache['records'] if r.get('sp_name') == sp_name), None)
-    if not rec:
-        return jsonify({'success': False, 'error': f'SP not found: {sp_name}'}), 404
-    definition = rec.get('definition', '') or ''
-    existing_llm = rec.get('llm_analysis')
-    if existing_llm:
-        return jsonify({'success': True, 'sp_name': sp_name, 'definition': definition, 'llm_analysis': existing_llm, 'cached': True})
-    system_prompt = (
-        'You are an expert SQL Server DBA. Analyze the stored procedure code provided. '
-        'Return ONLY a JSON object with keys: '
-        '"score" (int 0-100), "summary" (string, 1-2 sentences), '
-        '"recommendations" (list of strings), "issues" (list of strings). No markdown.'
-    )
-    code_snippet = definition[:4000] if definition else '(definition unavailable)'
-    prompt = (
-        f'Analyze this SQL Server stored procedure.\n'
-        f'SP name: {sp_name}\n'
-        f'Rule-based score: {rec["quality_score"]}/100\n'
-        f'Rule-based issues: {", ".join(rec["issues"]) or "none"}\n\n'
-        f'Code:\n{code_snippet}\n\n'
-        f'Return exactly: {{"score": 0-100, "summary": "...", "recommendations": ["..."], "issues": ["..."]}}'
-    )
-    try:
-        result = asyncio.run(llm_manager.generate(prompt, system_prompt=system_prompt))
-        if not result.get('success'):
-            return jsonify({'success': False, 'error': result.get('error', 'LLM error')}), 500
-        text = result.get('response', '')
-        json_match = re.search(r'\{.*\}', text, re.S)
-        if not json_match:
-            return jsonify({'success': False, 'error': 'LLM did not return valid JSON', 'raw': text[:400]}), 500
-        analysis = json.loads(json_match.group())
-        with _sp_cache_lock:
-            _sp_llm_cache[sp_name] = analysis
-            rec['llm_analysis'] = analysis
-        return jsonify({'success': True, 'sp_name': sp_name, 'definition': definition, 'llm_analysis': analysis, 'cached': False})
-    except Exception as exc:
-        logger.error(f'sp_analyze_single error for {sp_name}: {exc}')
-        return jsonify({'success': False, 'error': str(exc)}), 500
-
-
+# NOTE: DASHBOARD_TEMPLATE is now in frontend/templates/dashboard.html
+# CSS is in frontend/static/css/dashboard.css
+# JS is in frontend/static/js/dashboard.js
+# Template remnants removed - see frontend/ folder for full template
+
+# ============ DATA QUALITY DASHBOARD LOGIC ============
 @app.route('/')
 def home():
     """Render the dashboard."""
@@ -5039,6 +3430,9 @@ def home():
     sp_sort_by = requested_sort if requested_sort in SORTABLE_SP_COLUMNS else 'quality_score'
     sp_sort_dir = _normalize_sort_direction(requested_order) if active_view == 'sp' else 'asc'
 
+    # Intel filter parameter (all, fact, dim)
+    intel_filter = request.args.get('filter', 'all')
+
     with dashboard_lock:
         latest_report, latest_checked_at = _find_latest_gold_report(run_history)
         recent_refresh_logs = list(run_history[:15])
@@ -5046,13 +3440,21 @@ def home():
     sp_data = _load_sp_analysis() if active_view == 'sp' else None
     intel_data = _load_table_intel() if active_view == 'intel' else None
 
+    # Only run quality check on page load if no recent report exists
+    # This prevents excessive SQL queries while ensuring data is available
+    # Use lock to prevent concurrent quality checks from multiple users
     if active_view == 'quality' and latest_report is None:
-        run_result = _execute_quality_check(trigger='page-load', target_layer='gold')
-        if run_result.get('success'):
-            latest_report = run_result['run'].get('report', {})
-            latest_checked_at = run_result['run'].get('checked_at')
+        with quality_check_lock:
+            # Double-check after acquiring lock in case another thread already ran it
             with dashboard_lock:
-                recent_refresh_logs = list(run_history[:15])
+                latest_report, latest_checked_at = _find_latest_gold_report(run_history)
+            if latest_report is None:
+                run_result = _execute_quality_check(trigger='page-load', target_layer='gold')
+                if run_result.get('success'):
+                    latest_report = run_result['run'].get('report', {})
+                    latest_checked_at = run_result['run'].get('checked_at')
+                    with dashboard_lock:
+                        recent_refresh_logs = list(run_history[:15])
 
     initial_metrics = _sort_gold_metrics(_extract_gold_metrics(latest_report), sort_by=sort_by, sort_dir=sort_dir)
     initial_total_pages = (len(initial_metrics) + GOLD_TABLE_PAGE_SIZE - 1) // GOLD_TABLE_PAGE_SIZE if initial_metrics else 0
@@ -5103,18 +3505,27 @@ def home():
     refresh_prev_page_url = url_for('home', page=1, theme=theme, sort=refresh_sort_by, order=refresh_sort_dir, view='refresh')
     refresh_next_page_url = refresh_prev_page_url
     if ssis_refresh_table:
-        refresh_records = _sort_refresh_records(ssis_refresh_table['records'], sort_by=refresh_sort_by, sort_dir=refresh_sort_dir)
-        refresh_total_pages = (len(refresh_records) + REFRESH_TABLE_PAGE_SIZE - 1) // REFRESH_TABLE_PAGE_SIZE if refresh_records else 0
+        refresh_records = ssis_refresh_table.get('records', [])
+        refresh_table_columns = ssis_refresh_table.get('columns', [])
+        # Convert string column names to dict format if needed
+        if refresh_table_columns and isinstance(refresh_table_columns[0], str):
+            refresh_table_columns_dict = [{'key': col, 'label': col.replace('_', ' ').title()} for col in refresh_table_columns]
+        else:
+            refresh_table_columns_dict = refresh_table_columns
+        refresh_table_headers_html = _render_refresh_table_headers(refresh_table_columns_dict, refresh_sort_by, refresh_sort_dir, {
+            column['key']: url_for('home', page=1, theme=theme, sort=column['key'], order=('desc' if refresh_sort_by == column['key'] and refresh_sort_dir == 'asc' else 'asc'), view='refresh')
+            for column in refresh_table_columns_dict
+        })
+        refresh_total = len(refresh_records)
+        refresh_total_pages = (refresh_total + REFRESH_TABLE_PAGE_SIZE - 1) // REFRESH_TABLE_PAGE_SIZE if refresh_total else 0
         refresh_current_page = min(max(requested_page, 1), refresh_total_pages) if refresh_total_pages else 1
-        refresh_start_index = (refresh_current_page - 1) * REFRESH_TABLE_PAGE_SIZE if refresh_records else 0
-        refresh_page_records = refresh_records[refresh_start_index:refresh_start_index + REFRESH_TABLE_PAGE_SIZE]
+        refresh_start_index = (refresh_current_page - 1) * REFRESH_TABLE_PAGE_SIZE
+        refresh_end_index = refresh_start_index + REFRESH_TABLE_PAGE_SIZE
+        refresh_page_records = refresh_records[refresh_start_index:refresh_end_index]
+        refresh_table_rows_html = _render_refresh_table_rows(refresh_table_columns_dict, refresh_page_records)
+        refresh_records_json = json.dumps(refresh_records)
         refresh_summary_status = f"Showing latest execution for {len(refresh_records)} unique procedure{'s' if len(refresh_records) != 1 else ''}."
         refresh_summary_meta = f"Source: {ssis_refresh_table['source']} · Deduplicated by procedure name."
-        refresh_table_headers_html = _render_refresh_table_headers(refresh_table_columns, refresh_sort_by, refresh_sort_dir, {
-            column['key']: url_for('home', page=1, theme=theme, sort=column['key'], order=('desc' if refresh_sort_by == column['key'] and refresh_sort_dir == 'asc' else 'asc'), view='refresh')
-            for column in refresh_table_columns
-        })
-        refresh_table_rows_html = _render_refresh_table_rows(refresh_table_columns, refresh_page_records)
         if refresh_total_pages:
             refresh_start_row = refresh_start_index + 1
             refresh_end_row = min(refresh_start_index + REFRESH_TABLE_PAGE_SIZE, len(refresh_records))
@@ -5126,17 +3537,23 @@ def home():
         refresh_prev_page_url = url_for('home', page=max(refresh_current_page - 1, 1), theme=theme, sort=refresh_sort_by, order=refresh_sort_dir, view='refresh')
         refresh_next_page_url = url_for('home', page=min(refresh_current_page + 1, refresh_total_pages or 1), theme=theme, sort=refresh_sort_by, order=refresh_sort_dir, view='refresh')
     else:
+        refresh_records_json = json.dumps([])
         refresh_history_entries = recent_refresh_logs[:1]
-        refresh_table_headers_html = _render_refresh_table_headers(refresh_table_columns, refresh_sort_by, refresh_sort_dir, {
+        # Convert string column names to dict format if needed
+        if refresh_table_columns and isinstance(refresh_table_columns[0], str):
+            refresh_table_columns_dict = [{'key': col, 'label': col.replace('_', ' ').title()} for col in refresh_table_columns]
+        else:
+            refresh_table_columns_dict = refresh_table_columns
+        refresh_table_headers_html = _render_refresh_table_headers(refresh_table_columns_dict, refresh_sort_by, refresh_sort_dir, {
             column['key']: url_for('home', page=1, theme=theme, sort=column['key'], order=('desc' if refresh_sort_by == column['key'] and refresh_sort_dir == 'asc' else 'asc'), view='refresh')
-            for column in refresh_table_columns
+            for column in refresh_table_columns_dict
         })
         if refresh_history_entries:
             latest_refresh = refresh_history_entries[0]
             refresh_summary_status = f"Latest dashboard execution date: {latest_refresh.get('checked_at', '—')}"
             refresh_summary_meta = f"Procedure: {latest_refresh.get('trigger') or 'manual'} · Status: {latest_refresh.get('status') or 'unknown'}"
             refresh_table_rows_html = _render_refresh_table_rows(
-                refresh_table_columns,
+                refresh_table_columns_dict,
                 [{
                     'procedure_name': latest_refresh.get('trigger') or 'manual',
                     'execution_date': latest_refresh.get('checked_at') or '—',
@@ -5186,15 +3603,44 @@ def home():
     sp_refresh_url = url_for('sp_refresh', theme=theme)
     intel_url = url_for('home', theme=theme, view='intel')
     intel_refresh_url = url_for('intel_refresh', theme=theme)
+    about_url = url_for('home', theme=theme, view='about')
 
+    # Intel pagination setup
     intel_cards_html = '<p class="muted-text">Navigate to this tab to load table intelligence.</p>'
     intel_total = 0
+    intel_current_page = 1
+    intel_total_pages = 0
+    intel_pager_info = 'Page 0 of 0'
+    intel_prev_disabled = 'disabled'
+    intel_next_disabled = 'disabled'
+    intel_prev_page_url = url_for('home', theme=theme, view='intel', page=1)
+    intel_next_page_url = intel_prev_page_url
+    
     if active_view == 'intel':
         if intel_data:
-            intel_total = intel_data.get('total', 0)
-            intel_cards_html = _render_intel_cards(intel_data.get('records', []))
+            intel_records = intel_data.get('records', [])
+            intel_total = len(intel_records)
+            # Apply filter to intel records before pagination
+            if intel_filter == 'fact':
+                intel_records = [r for r in intel_records if r.get('table_type', '').lower() == 'fact']
+            elif intel_filter == 'dim':
+                intel_records = [r for r in intel_records if r.get('table_type', '').lower() == 'dimension']
+            
+            intel_total = len(intel_records)
+            intel_total_pages = (intel_total + INTEL_PAGE_SIZE - 1) // INTEL_PAGE_SIZE if intel_total else 0
+            intel_current_page = min(max(requested_page, 1), intel_total_pages) if intel_total_pages else 1
+            start_idx = (intel_current_page - 1) * INTEL_PAGE_SIZE
+            end_idx = start_idx + INTEL_PAGE_SIZE
+            paged_records = intel_records[start_idx:end_idx]
+            intel_cards_html = _render_intel_cards(paged_records)
+            intel_pager_info = f"Page {intel_current_page} of {intel_total_pages} — showing {start_idx + 1}-{min(end_idx, intel_total)} of {intel_total}" if intel_total else 'Page 0 of 0'
+            intel_prev_disabled = 'disabled' if intel_current_page <= 1 else ''
+            intel_next_disabled = 'disabled' if intel_current_page >= intel_total_pages else ''
+            intel_prev_page_url = url_for('home', theme=theme, view='intel', page=max(intel_current_page - 1, 1), filter=intel_filter)
+            intel_next_page_url = url_for('home', theme=theme, view='intel', page=min(intel_current_page + 1, intel_total_pages), filter=intel_filter)
         else:
             intel_cards_html = '<p class="muted-text">No metadata files found in metadata_md/.</p>'
+            intel_pager_info = 'Page 0 of 0'
 
     def _page_url(page_number: int) -> str:
         return url_for('home', page=page_number, theme=theme, sort=sort_by, order=sort_dir, view='quality')
@@ -5218,8 +3664,8 @@ def home():
     quality_url = url_for('home', theme=theme, sort=sort_by, order=sort_dir, page=current_page, view='quality')
     refresh_url = url_for('refresh_status', theme=theme, sort=refresh_sort_by, order=refresh_sort_dir, page=refresh_current_page if active_view == 'refresh' else 1, view='refresh')
 
-    return render_template_string(
-        DASHBOARD_TEMPLATE,
+    return render_template(
+        'dashboard.html',
         active_view=active_view,
         initial_status=initial_status,
         initial_meta=initial_meta,
@@ -5258,6 +3704,7 @@ def home():
         refresh_next_disabled=refresh_next_disabled,
         refresh_prev_page_url=refresh_prev_page_url,
         refresh_next_page_url=refresh_next_page_url,
+        refresh_records_json=refresh_records_json,
         sp_url=sp_url,
         sp_refresh_url=sp_refresh_url,
         sp_status=sp_status,
@@ -5274,8 +3721,15 @@ def home():
         sp_records_json=sp_records_json,
         intel_url=intel_url,
         intel_refresh_url=intel_refresh_url,
+        intel_filter=intel_filter,
+        about_url=about_url,
         intel_cards_html=intel_cards_html,
         intel_total=intel_total,
+        intel_pager_info=intel_pager_info,
+        intel_prev_disabled=intel_prev_disabled,
+        intel_next_disabled=intel_next_disabled,
+        intel_prev_page_url=intel_prev_page_url,
+        intel_next_page_url=intel_next_page_url,
     )
 
 
@@ -5514,6 +3968,24 @@ def get_metadata():
     """Get all available metadata tables"""
     metadata = load_metadata()
     return jsonify({'success': True, 'tables': list(metadata.keys()), 'count': len(metadata)})
+
+@app.route('/sp-refresh')
+def sp_refresh():
+    """Clear the SP cache and reload the SP Analysis tab."""
+    global _sp_analysis_cache, _sp_cache_timestamp
+    with _sp_cache_lock:
+        _sp_analysis_cache = None
+        _sp_cache_timestamp = None
+    return redirect(url_for('home', view='sp', refreshed=1))
+
+@app.route('/intel-refresh')
+def intel_refresh():
+    """Clear the Table Intelligence cache and reload the tab."""
+    global _intel_cache, _intel_cache_timestamp
+    with _intel_cache_lock:
+        _intel_cache = None
+        _intel_cache_timestamp = None
+    return redirect(url_for('home', view='intel', refreshed=1))
 
 if __name__ == '__main__':
     print("="*60)

@@ -15,7 +15,7 @@ from clients.kalyani_langchain_llm import KalyaniLangChainLLM
 from langchain_core.messages import HumanMessage, SystemMessage
 
 
-METADATA_PATH = Path("/home/robotics/Multi_Agent_System/metadata_md")
+METADATA_PATH = Path(__file__).resolve().parents[3] / "metadata_md"
 
 
 class SchemaSelectorAgent(BaseAgent):
