@@ -4,8 +4,8 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Load .env from config directory (parent of backend)
-env_path = Path(__file__).resolve().parents[2] / "config" / ".env"
+# Load .env from backend/config directory
+env_path = Path(__file__).resolve().parents[1] / "config" / ".env"
 load_dotenv(dotenv_path=env_path)
 
 class Settings(BaseSettings):

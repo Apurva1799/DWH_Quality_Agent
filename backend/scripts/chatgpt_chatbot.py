@@ -40,7 +40,8 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from dotenv import load_dotenv
 from app.agents.chain_of_agents import AgentOrchestrator
 
-load_dotenv()
+# Load .env from backend/config directory
+load_dotenv(dotenv_path=project_root / 'backend' / 'config' / '.env')
 
 app = Flask(__name__, template_folder=str(project_root / 'frontend' / 'templates'), static_folder=str(project_root / 'frontend' / 'static'))
 
